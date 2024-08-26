@@ -1,0 +1,17 @@
+name: dm
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10.14=hb885b13_1
+  - pip=24.2=py310hca03da5_0
+  - pip:
+    - pyyaml==6.0.2
+    - easydict==1.13
+    - labkey==3.1.0
+    - easydict==1.13
+    - yachalk==0.1.6
+    - rich==13.7.1
+    - click==8.1.7
+    - python-dotenv==1.0.1
+prefix: /opt/homebrew/Caskroom/miniconda/base/envs/dm

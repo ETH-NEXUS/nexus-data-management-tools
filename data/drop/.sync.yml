@@ -1,0 +1,3 @@
+drop_folder: DROP
+repository_folder: data/repository
+processed_folder: data/processed
