@@ -1,8 +1,0 @@
-default:
-  labkey: localhost
-  project:
-    name: myProject
-dev:
-  labkey: intercept-labkey-dev.nexus.ethz.ch
-  project:
-    name: LOOP Intercept

@@ -6,6 +6,9 @@ Helper classes and functions
 
 import os
 import shlex
+import binascii
+import operator
+import hashlib
 from subprocess import run
 from enum import Enum
 from yachalk import chalk
@@ -86,29 +89,58 @@ class TableOutput:
         sep: str = "#",
         headers: tuple[str] = None,
         show_lines=False,
+        column_options={},
+        sort_by=None,
+        row_style=lambda row: None,
     ):
         table = Table(
-            show_header=(headers is not None), show_lines=show_lines, show_edge=False
+            show_header=(
+                headers is not None
+                or (isinstance(data, list) and isinstance(data[0], dict))
+            ),
+            show_lines=show_lines,
+            show_edge=False,
         )
         if headers:
             for header in headers:
-                table.add_column(header)
+                table.add_column(header, **column_options)
         elif isinstance(data, list) and isinstance(data[0], dict):
             for header in data[0].keys():
-                table.add_column(header)
+                table.add_column(header, **column_options)
 
         if isinstance(data, str):
             data = data.split("\n")
 
+        if sort_by is not None and isinstance(data, list) and isinstance(data[0], dict):
+            if sort_by in data[0].keys():
+                data = sorted(data, key=operator.itemgetter(sort_by))
+
         for line in data:
             if isinstance(line, str):
-                table.add_row(*line.split(sep))
+                row = line.split(sep)
+                table.add_row(*row, style=row_style(row))
             elif isinstance(line, list):
-                table.add_row(*line)
+                table.add_row(*line, style=row_style(line))
             elif isinstance(line, dict):
                 if headers:
-                    table.add_row(*[str(line[h]) for h in headers])
+                    table.add_row(
+                        *[str(line[h]) for h in headers], style=row_style(line)
+                    )
                 else:
-                    table.add_row(*[str(v) for v in line.values()])
+                    table.add_row(
+                        *[str(v) for v in line.values()], style=row_style(line)
+                    )
 
         cls.console.print(table)
+
+
+class Hasher:
+    @classmethod
+    def crc32(cls, filename):
+        buf = open(filename, "rb").read()
+        hash = binascii.crc32(buf) & 0xFFFFFFFF
+        return "%08X" % hash
+
+    @classmethod
+    def md5(cls, filename):
+        return hashlib.md5(open(filename, "rb").read()).hexdigest()

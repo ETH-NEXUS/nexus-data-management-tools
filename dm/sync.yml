@@ -1,0 +1,61 @@
+drop_folder: DROP
+drop_filename_regex: "[^\/]+\/(?P<phase>[^\/]+)\/.*(?P<seq>SEQ_[A-Z]{5}).*(?P<prefix>(?P<lib>[A-Z]{3}_[A-Z]{6})_[A-Z][0-9]+_[A-Z][0-9]{3})_(?P<suffix>[^.]+)"
+drop_filename_filter: "**/*.fastq.gz"
+repository_folder: data/repository
+repository_filename: scRNA/raw/<phase>/<lib>/<lib>_<seq>_r<run>__<suffix>.fastq.gz
+processed_folder: data/processed
+
+# If set to 'run' the <run> will be replaced with a sequence number starting
+# with 1. If the file already exist in the repository the sequence will
+# be increased by 1.
+# If set to hash the <hash> will be replaced with a 6 character long alphanumeric 
+# hash derived from the md5 sum of the file.
+filename_sequence: run
+
+# The dateformat specification to use for date fields 
+date_format: '%Y-%m-%d %H:%M:%S'
+
+# Lobkey configuration
+# define the 
+# - host: hostname of the labkey instance
+# - containre: aka. project name inside labkey
+# - schema: the schema that contains the table
+# - table: the table name to add the rows about synced files
+labkey:
+  host: intercept-labkey-dev.nexus.ethz.ch
+  container: LOOP Intercept
+  context: 
+  schema: exp.data
+  table: scRNA_Experiments
+
+# Define the values that should go into what fields in the labkey
+# table defined in the 'labkey' section. You can use <xxx> to get
+# values extracted from the drop_filename_regex. In addition to 
+# this you can use:
+# - now(): set this field to the date-time of now
+# - drop_file_mtime(): set the field to the date-time of the last 
+#                      modification timestamp of the drop_file
+fields:
+  Name: <lib>_<seq>_r<run> #GEX-CJBAIF_SEQ-NYCTQ_r1
+  Project_Phase: <phase>
+  Run_Number: <run>
+  Uploaded_Filename_Prefix: <prefix> #GEX_CJBAIF_S18_L004
+  Data_synced: True
+  Date_Of_Syncing: now()
+  Date_Of_Uploading: drop_file_mtime()
+  Path_To_Synced_Data:
+
+# Define what field is the 'file_list' and which is the 
+# 'file_list_aggregator'
+field_parameters:
+  Path_To_Synced_Data: file_list
+  Uploaded_Filename_Prefix: file_list_aggregator
+
+# Lookups can be used to tranlate a value to another value
+# for example if you wnat to change the <phase> name to
+# another walue that it comes from the 'drop_filename_regex'
+# you can define the phase.<from-value>.<to-value>.
+lookups:
+  phase:
+    btki: BTKi
+

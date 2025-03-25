@@ -1,4 +1,6 @@
 .env
 !.env.TEMPLATE
-data/Pipfile
+Pipfile
 __pychache__/
+data/
+*.pyc
