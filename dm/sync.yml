@@ -1,26 +1,41 @@
 drop_folder: DROP
 drop_filename_regex: "[^\/]+\/(?P<phase>[^\/]+)\/.*(?P<seq>SEQ_[A-Z]{5}).*(?P<prefix>(?P<lib>[A-Z]{3}_[A-Z]{6})_[A-Z][0-9]+_[A-Z][0-9]{3})_(?P<suffix>[^.]+)"
 drop_filename_filter: "**/*.fastq.gz"
+ # Note: The regex is applied to the source path after removing the drop_folder prefix
+ #       (and any leading slash). Use named groups like <phase>, <seq>, <lib>, <prefix>, <suffix>.
+ #       Example: a nested path under DROP/ must match the groups above.
+ # The glob is evaluated under drop_folder to discover candidate files.
 repository_folder: data/repository
+ # Template for the destination path relative to repository_folder.
+ # Supported placeholders:
+ #   <phase>, <lib>, <seq>, <prefix>, <suffix> (from regex)
+ #   <run>  (auto-incremented when filename_sequence: run)
+ #   <hash> (CRC32 of file contents when filename_sequence: hash)
 repository_filename: scRNA/raw/<phase>/<lib>/<lib>_<seq>_r<run>__<suffix>.fastq.gz
+ # Destination for archiving/moving successfully processed drop files (reserved for future use).
 processed_folder: data/processed
 
-# If set to 'run' the <run> will be replaced with a sequence number starting
-# with 1. If the file already exist in the repository the sequence will
-# be increased by 1.
-# If set to hash the <hash> will be replaced with a 6 character long alphanumeric 
-# hash derived from the md5 sum of the file.
+# Filename sequencing for collisions / canonical naming:
+# - run  : Replace <run> with an integer starting at 1 and increment if a
+#          conflicting target filename is already planned in this run.
+# - hash : Replace <hash> with an 8-character uppercase CRC32 of the file
+#          contents (e.g., A1B2C3D4). Use this when you want deterministic
+#          names without maintaining a per-prefix run counter.
 filename_sequence: run
 
-# The dateformat specification to use for date fields 
+# The date format (strftime) to use for date fields (used by now() and drop_file_mtime()).
 date_format: '%Y-%m-%d %H:%M:%S'
 
-# Lobkey configuration
-# define the 
-# - host: hostname of the labkey instance
-# - containre: aka. project name inside labkey
-# - schema: the schema that contains the table
-# - table: the table name to add the rows about synced files
+# LabKey configuration
+# Define:
+# - host:     Hostname of the LabKey instance
+# - container: Project/folder name in LabKey (e.g., "LOOP Intercept")
+# - context:  Optional context path (not currently used by the tool)
+# - schema:   Schema containing the table (e.g., exp)
+# - table:    Table name (e.g., data or a custom table)
+# Important: schema/table must match how LabKey expects them in select_rows(schema, table).
+#            If you use a custom table like scRNA_Experiments, ensure 'schema' is your schema
+#            name (without dots) and 'table' is the exact table name.
 labkey:
   host: intercept-labkey-dev.nexus.ethz.ch
   container: LOOP Intercept
@@ -28,13 +43,15 @@ labkey:
   schema: exp.data
   table: scRNA_Experiments
 
-# Define the values that should go into what fields in the labkey
-# table defined in the 'labkey' section. You can use <xxx> to get
-# values extracted from the drop_filename_regex. In addition to 
-# this you can use:
-# - now(): set this field to the date-time of now
-# - drop_file_mtime(): set the field to the date-time of the last 
-#                      modification timestamp of the drop_file
+# Define values for fields in the LabKey table (defined in 'labkey' above).
+# You can use placeholders (<phase>, <seq>, <lib>, <prefix>, <suffix>, <run>, <hash>)
+# captured by drop_filename_regex. Additionally, the following functions are supported:
+# - now()              : Current local date-time formatted per date_format
+# - drop_file_mtime()  : Last modification time of the source file (formatted)
+# Notes:
+# - The field designated as 'file_list' in field_parameters will be set automatically
+#   to the final repository path of the file.
+# - Non-string values (e.g., booleans) should be written using YAML types (True/False).
 fields:
   Name: <lib>_<seq>_r<run> #GEX-CJBAIF_SEQ-NYCTQ_r1
   Project_Phase: <phase>
@@ -45,16 +62,16 @@ fields:
   Date_Of_Uploading: drop_file_mtime()
   Path_To_Synced_Data:
 
-# Define what field is the 'file_list' and which is the 
-# 'file_list_aggregator'
+# Define special roles for fields used during aggregation:
+# - file_list           : The field that will contain a (possibly aggregated) list of paths
+# - file_list_aggregator: Grouping key used to combine multiple file_list entries into one row
 field_parameters:
   Path_To_Synced_Data: file_list
   Uploaded_Filename_Prefix: file_list_aggregator
 
-# Lookups can be used to tranlate a value to another value
-# for example if you wnat to change the <phase> name to
-# another walue that it comes from the 'drop_filename_regex'
-# you can define the phase.<from-value>.<to-value>.
+# Lookups translate captured values to another representation.
+# Example: Map a regex-captured phase to a canonical label.
+# Define as nested keys: lookups.phase.<from-value>: <to-value>
 lookups:
   phase:
     btki: BTKi

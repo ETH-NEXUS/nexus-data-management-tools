@@ -1,58 +1,17 @@
 """
 Helpers
 ====================================
-Helper classes and functions
+Core helper classes and functions used by the CLI.
 """
 
 import os
-import shlex
 import binascii
 import operator
 import hashlib
 import blake3
-from subprocess import run
-from enum import Enum
 from yachalk import chalk
 from rich.console import Console
 from rich.table import Table
-
-
-class ReturnCode(Enum):
-    OK = 0
-
-
-class Executor:
-    """
-    Class to execute shell commands
-    """
-
-    @classmethod
-    def success(cls, command: str, env: dict = None) -> bool:
-        ret, _ = cls.__run(command, env=env)
-        return ret == ReturnCode.OK.value
-
-    @classmethod
-    def run(cls, command: str, env: dict = None) -> str:
-        _, output = cls.__run(command, env=env)
-        return cls.__handle_output(output)
-
-    @classmethod
-    def __run(cls, command: str, env: dict = None) -> tuple[int, str]:
-        """
-        Runs a shell command with the default environment.
-        If env is given it is _UPDATED_ to the default environment.
-        """
-        _env = os.environ.copy()
-        if env:
-            _env.update(env)
-        p = run(shlex.split(command), capture_output=True, env=_env)
-        return p.returncode, cls.__handle_output(p.stdout.decode())
-
-    @classmethod
-    def __handle_output(cls, output: str) -> str:
-        # We remove the last \n
-        return output.rstrip("\n")
-
 
 class Message:
     """
