@@ -155,17 +155,24 @@ def sync(
             {
                 "source": join(drop_folder, source_filename),
                 "target": join(repository_folder, final_repository_filename),
+                "vars": replacements,
             }
         )
 
-    # Load external metadata sources from the local drop folder YAML and print a summary
+    # Load external metadata sources and matching rules from the local drop folder YAML
     metadata_sources_cfg = None
+    metadata_match_cfg = None
+    metadata_required = False
     try:
         with open(join(drop_folder, "sync.yml"), "r") as cf:
             _local_cfg = yaml.safe_load(cf) or {}
             metadata_sources_cfg = _local_cfg.get("metadata_sources")
+            metadata_match_cfg = _local_cfg.get("metadata_match")
+            metadata_required = bool(_local_cfg.get("metadata_required", False))
     except Exception:
         metadata_sources_cfg = None
+        metadata_match_cfg = None
+        metadata_required = False
     if metadata_sources_cfg:
         M.info("Loading metadata sources...")
         sources_result = load_metadata_sources(metadata_sources_cfg, drop_folder)
@@ -175,6 +182,70 @@ def sync(
         ]
         if summary:
             T.out(summary, sort_by="name", column_options={"justify": "left", "vertical": "middle"})
+
+        # Build a mapping from source name to rows for quick lookup
+        sources_by_name = {r.get("name"): r for r in sources_result if r.get("status") == "ok"}
+
+        # Perform metadata matching per file if rules are provided
+        if metadata_match_cfg and isinstance(metadata_match_cfg, dict):
+            default_key_tmpl = metadata_match_cfg.get("key_template")
+            rules = metadata_match_cfg.get("search") or []
+            field_index_cache: dict[tuple[str, str], dict[str, dict]] = {}
+            for sync_file in sync_file_list:
+                sync_file["meta_found"] = False
+                sync_file["meta_source"] = ""
+                sync_file["meta_key"] = ""
+                vars_map = sync_file.get("vars", {})
+                for rule in rules:
+                    src_name = rule.get("source")
+                    field = rule.get("field")
+                    key_tmpl = rule.get("key_template", default_key_tmpl)
+                    if not (src_name and field and key_tmpl):
+                        continue
+                    # Render key from template using regex variables
+                    key_val = key_tmpl
+                    for part, value in vars_map.items():
+                        key_val = re.sub(f"<{part}>", str(value), key_val)
+                    sync_file["meta_key"] = key_val
+                    src = sources_by_name.get(src_name)
+                    if not src:
+                        M.warn(f"Metadata source '{src_name}' not available; skipping rule")
+                        continue
+                    # Build an index for this (source, field) pair if not present
+                    index_key = (src_name, field)
+                    if index_key not in field_index_cache:
+                        idx = {}
+                        for row in src.get("rows", []):
+                            v = row.get(field)
+                            if v is not None and str(v) not in idx:
+                                idx[str(v)] = row
+                        field_index_cache[index_key] = idx
+                    idx = field_index_cache[index_key]
+                    row_match = idx.get(str(key_val))
+                    if row_match is not None:
+                        sync_file["meta_found"] = True
+                        sync_file["meta_source"] = src_name
+                        # Optionally attach the matched row for later use
+                        sync_file["meta_row"] = row_match
+                        break
+                    if sync_file["meta_found"]:
+                        break
+
+        # Remove internal variable maps before printing any tables
+        for _sf in sync_file_list:
+            _sf.pop("vars", None)
+            _sf.pop("meta_row", None)
+
+    # Warn if metadata is required but configuration is missing
+    if metadata_required and not metadata_sources_cfg:
+        M.warn("metadata_required is True but no metadata_sources configured; all files will be skipped.")
+    if metadata_required and not metadata_match_cfg:
+        M.warn("metadata_required is True but no metadata_match rules defined; all files will be skipped.")
+
+    # Ensure cleanup even if no metadata sources were configured
+    for _sf in sync_file_list:
+        _sf.pop("vars", None)
+        _sf.pop("meta_row", None)
 
     # Building LabKey rows is deferred until write-back is implemented.
 
@@ -221,7 +292,9 @@ def sync(
         sort_by="source",
         column_options={"justify": "left", "vertical": "middle"},
         row_style=lambda row: (
-            "red" if row.get("integrity_method") == "md5" and (row.get("md5_ok") is False) else None
+            "red"
+            if row.get("integrity_method") == "md5" and (row.get("md5_ok") is False)
+            else ("yellow" if ("meta_found" in row and row.get("meta_found") is False) else None)
         ),
     )
 
@@ -235,6 +308,23 @@ def sync(
             for sync_file in sync_file_list:
                 # Copy source to target
                 copy_ok = False
+                # Policy: require metadata match before copying
+                if metadata_required and not sync_file.get("meta_found", False):
+                    M.warn(
+                        f"Skipping {sync_file['source']} due to missing metadata (metadata_required)."
+                    )
+                    synced_file_list.append(
+                        {
+                            "source": sync_file["source"],
+                            "target": sync_file["target"],
+                            "copy_ok": False,
+                            "verified": False,
+                            "reason": "metadata_missing",
+                            "sidecar": "",
+                            "sidecar_copy_ok": False,
+                        }
+                    )
+                    continue
                 # Pre-copy integrity enforcement
                 expected_md5 = read_md5_sidecar(sync_file["source"])
                 if expected_md5 is not None:

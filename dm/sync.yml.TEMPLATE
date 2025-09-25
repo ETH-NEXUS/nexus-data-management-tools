@@ -75,3 +75,54 @@ lookups:
   phase:
     btki: BTKi
 
+
+# Optional: External metadata sources to load before syncing.
+# Supported types: labkey, excel, csv
+# - labkey: requires host, container, schema, table; optional columns, filters
+# - excel: requires path; optional sheet
+# - csv  : requires path; optional delimiter
+metadata_sources:
+  - name: lk_experiments
+    type: labkey
+    host: your-labkey-host.example.org
+    container: "Your Container"
+    schema: exp
+    table: data
+    columns: [Name, Uploaded_Filename_Prefix, Path_To_Synced_Data]
+    filters:
+      - { field: Path_To_Synced_Data, type: contains, value: "/scRNA/raw/" }
+
+  - name: sample_manifest
+    type: excel
+    path: manifests/sample_manifest.xlsx  # relative to the drop folder unless absolute
+    sheet: Sheet1                        # optional
+
+  - name: barcodes
+    type: csv
+    path: manifests/barcodes.csv         # relative to the drop folder unless absolute
+    delimiter: ","                       # optional; default is comma
+
+
+# Optional: Rules to find the metadata row for each file before syncing.
+# The tool renders a key using the named regex variables from the file path
+# (e.g., <phase>, <lib>, <seq>, <prefix>, <suffix>) and searches the given
+# source's field for an exact string match.
+#
+# You can specify a default key_template and per-source overrides. The first
+# successful rule wins and annotates the file with meta_found, meta_source,
+# meta_key, and meta_row.
+metadata_match:
+  # Default key template (can be overridden in each rule below)
+  key_template: <prefix>
+  # Ordered list of search rules
+  search:
+    - source: lk_experiments
+      field: Uploaded_Filename_Prefix
+      # key_template: <prefix>         # optional, falls back to default
+    - source: sample_manifest
+      field: Prefix
+      key_template: <lib>_<seq>
+
+# If true, a metadata match is required to allow copying. Files without a
+# matching metadata row will be skipped with reason "metadata_missing".
+metadata_required: false

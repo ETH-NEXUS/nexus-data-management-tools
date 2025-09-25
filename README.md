@@ -58,6 +58,8 @@ The tool prepares row data for LabKey insertion, including optional aggregation 
   - `Message`: colored console messages.
   - `TableOutput`: pretty table printer using `rich`.
   - `Hasher`: `crc32` and `md5` helpers.
+- `dm/metadata.py`
+  - Loaders for external metadata sources (LabKey, Excel, CSV) and support for matching metadata rows per file using configured rules.
 - `dm/sync.yml.TEMPLATE`
   - Template configuration to copy into each drop folder as `<drop_folder>/sync.yml`.
 - `environment.yml`
@@ -123,6 +125,13 @@ Key settings in `sync.yml`:
   - `labkey`: Load rows from a LabKey table using the configured host/container/schema/table.
   - `excel`: Load rows from an Excel file (`.xlsx`) using `openpyxl`.
   - `csv`: Load rows from a CSV file using Python's csv module.
+- `metadata_match`: Rules to find the metadata row for each file before syncing.
+  - `key_template`: Default template string to render a metadata key from the filename regex variables (e.g., `<prefix>`, `<lib>_<seq>`).
+  - `search`: Ordered list of rule objects, each with:
+    - `source`: Name of the source from `metadata_sources` to search.
+    - `field`: Field/column name within that source to match against.
+    - `key_template` (optional): Override the default template for this rule.
+- `metadata_required`: Boolean flag. If `true`, files without a matching metadata row are skipped (reason `metadata_missing`).
 
 Example `metadata_sources` configuration:
 
@@ -147,6 +156,18 @@ metadata_sources:
     type: csv
     path: manifests/barcodes.csv            # relative to the drop folder unless absolute
     delimiter: ","                          # optional; default is comma
+
+metadata_match:
+  # Default key template used to render a key per file from regex variables
+  key_template: <prefix>
+  # Ordered rules (first match wins)
+  search:
+    - source: lk_experiments
+      field: Uploaded_Filename_Prefix
+      # key_template: <prefix>
+    - source: sample_manifest
+      field: Prefix
+      key_template: <lib>_<seq>
 ```
 
 Notes:
@@ -251,13 +272,15 @@ Inside `dm/dm.py` (`sync` command):
    - If a sidecar `.md5` exists: compute the file's MD5 (streamed) and compare to the sidecar value. Files with a mismatch are flagged and will be skipped during copy.
    - If no sidecar `.md5` exists: the tool will compute a BLAKE3 digest and write a `.blake3` sidecar for the source file before copying.
 8. Optional metadata loading: If `metadata_sources` is configured, each source is loaded (LabKey/Excel/CSV) and a summary table (name, type, count, status) is printed.
-9. LabKey presence check: Queries LabKey (`QueryFilter` with `CONTAINS` on your configured `file_list_field`) to set `in_labkey=True/False` for each planned target file.
-10. Reporting: Prints a table of planned sync actions with color cues.
-11. Copy (if `--do-it`):
+9. Optional per-file metadata matching: If `metadata_match` is configured, the tool renders a key per file using the filename regex variables and searches the configured source/field for a matching row. Each file is annotated with `meta_found`, `meta_source`, and `meta_key`.
+10. LabKey presence check: Queries LabKey (`QueryFilter` with `CONTAINS` on your configured `file_list_field`) to set `in_labkey=True/False` for each planned target file.
+11. Reporting: Prints a table of planned sync actions with color cues.
+12. Copy (if `--do-it`):
     - If `.md5` sidecar exists and matches: proceed to copy.
     - If `.md5` sidecar exists and mismatches: skip copy and report an error.
     - If no `.md5` sidecar exists: compute and write a `.blake3` sidecar for the source file, then copy.
     - After copy: verify by block-by-block compare. If verification succeeds, copy the matching sidecar (`.md5` or `.blake3`) to the repository alongside the main file. Then print a second table showing copy status.
+    - If `metadata_required: true` and a file has no matching metadata row, it is skipped with `reason: metadata_missing`.
 
 ---
 
@@ -265,12 +288,16 @@ Inside `dm/dm.py` (`sync` command):
 
 Two tables are printed using `rich`:
 
-- Pre-copy planning table (integrity and presence checks):
-  - `source`: Absolute path of source file in the drop folder
-  - `target`: Target path in the repository
-  - `md5`: MD5 of the source file
-  - `orig_md5`: MD5 read from sidecar file (if any)
-  - `md5_ok`: Whether `md5 == orig_md5`
+- Pre-copy table (planning and integrity status):
+  - `source`
+  - `target`
+  - `integrity_method`: md5 or blake3
+  - `md5`: computed MD5 (if applicable)
+  - `orig_md5`: value from `.md5` sidecar (if present)
+  - `md5_ok`: result of the MD5 match (if applicable)
+  - `meta_found`: whether a metadata row was found according to `metadata_match`
+  - `meta_source`: which source produced the match
+  - `meta_key`: the rendered key used for matching
   - `in_labkey`: Whether LabKey already has a row referencing the target path
 
 - Post-copy table (copy and verification status):
@@ -283,6 +310,7 @@ Two tables are printed using `rich`:
 
 Color highlighting:
 - Pre-copy: Red rows indicate `md5_ok == False` (currently marks as failing if no `.md5` file is present — see Known Limitations).
+- Pre-copy: Yellow rows indicate metadata matching did not find a row (`meta_found == False`), if `metadata_match` is configured.
 - Post-copy: Yellow rows indicate `copy_ok == False`; Red rows indicate `verified == False` or a sidecar was expected/copied (`md5`/`blake3`) but `sidecar_copy_ok == False`.
 
 ---
