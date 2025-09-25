@@ -9,6 +9,7 @@ import shlex
 import binascii
 import operator
 import hashlib
+import blake3
 from subprocess import run
 from enum import Enum
 from yachalk import chalk
@@ -136,11 +137,42 @@ class TableOutput:
 
 class Hasher:
     @classmethod
-    def crc32(cls, filename):
-        buf = open(filename, "rb").read()
-        hash = binascii.crc32(buf) & 0xFFFFFFFF
-        return "%08X" % hash
+    def crc32(cls, filename, block_size: int = 8 * 1024 * 1024):
+        crc = 0
+        with open(filename, "rb") as f:
+            for chunk in iter(lambda: f.read(block_size), b""):
+                crc = binascii.crc32(chunk, crc)
+        return "%08X" % (crc & 0xFFFFFFFF)
 
     @classmethod
     def md5(cls, filename):
-        return hashlib.md5(open(filename, "rb").read()).hexdigest()
+        h = hashlib.md5()
+        with open(filename, "rb") as f:
+            for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    @classmethod
+    def blake3(cls, filename, block_size: int = 8 * 1024 * 1024) -> str:
+        h = blake3.blake3()
+        with open(filename, "rb") as f:
+            for chunk in iter(lambda: f.read(block_size), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    @classmethod
+    def equals(cls, src: str, dst: str, block_size: int = 8 * 1024 * 1024) -> bool:
+        """
+        Compare two files efficiently by reading both in fixed-size blocks.
+        Returns True if files are byte-for-byte identical, False otherwise.
+        """
+        if os.path.getsize(src) != os.path.getsize(dst):
+            return False
+        with open(src, "rb") as f1, open(dst, "rb") as f2:
+            while True:
+                b1 = f1.read(block_size)
+                b2 = f2.read(block_size)
+                if not b1 and not b2:
+                    return True
+                if b1 != b2:
+                    return False

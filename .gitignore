@@ -1,6 +1,6 @@
 .env
 !.env.TEMPLATE
 Pipfile
-__pychache__/
+__pycache__/
 data/
 *.pyc

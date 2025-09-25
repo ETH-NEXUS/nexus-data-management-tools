@@ -190,23 +190,30 @@ def sync(
     # T.out(aggregated_rows, headers=fields.keys())
 
     ###
-    # Do md5 check
+    # Pre-copy integrity check plan
+    # - If an .md5 sidecar exists: compute MD5 and compare to sidecar value
+    # - If no .md5 sidecar: we will compute a .blake3 sidecar during copy step
     ###
-    M.info("Checking md5 sum of source files...")
+    M.info("Checking source integrity using md5 sidecars (if present)...")
     for sync_file in sync_file_list:
-        md5_of_file = Hasher.md5(sync_file["source"])
-        orig_md5 = None
-        # If there is a file with the same name and the extension 'md5'
-        # we read the first string from the file which is the md5 sum
         md5_filename = f"{sync_file['source']}.md5"
         if isfile(md5_filename):
+            orig_md5 = None
             with open(md5_filename, "r") as f:
                 first_line = f.readline().split(None, 1)
                 if len(first_line) > 0:
                     orig_md5 = first_line[0]
-        sync_file["md5"] = md5_of_file
-        sync_file["orig_md5"] = orig_md5
-        sync_file["md5_ok"] = md5_of_file == orig_md5
+            md5_of_file = Hasher.md5(sync_file["source"]) if orig_md5 else None
+            sync_file["integrity_method"] = "md5"
+            sync_file["md5"] = md5_of_file
+            sync_file["orig_md5"] = orig_md5
+            sync_file["md5_ok"] = (md5_of_file == orig_md5) if (md5_of_file and orig_md5) else False
+        else:
+            # No md5 sidecar present; we'll create a .blake3 sidecar before copy
+            sync_file["integrity_method"] = "blake3"
+            sync_file["md5"] = None
+            sync_file["orig_md5"] = None
+            sync_file["md5_ok"] = None
 
     # Comparing with labkey
     M.info("Collecting information from labkey...")
@@ -231,7 +238,9 @@ def sync(
         sync_file_list,
         sort_by="source",
         column_options={"justify": "left", "vertical": "middle"},
-        row_style=lambda row: "red" if not row["md5_ok"] else None,
+        row_style=lambda row: (
+            "red" if row.get("integrity_method") == "md5" and (row.get("md5_ok") is False) else None
+        ),
     )
 
     ###
@@ -246,25 +255,80 @@ def sync(
                 # Copy source to target
                 ###
                 copy_ok = False
+                # Pre-copy integrity enforcement
+                md5_filename = f"{sync_file['source']}.md5"
+                if isfile(md5_filename):
+                    # If md5 sidecar exists, ensure it matches before copying
+                    if sync_file.get("md5_ok") is False:
+                        M.error(
+                            f"MD5 mismatch for {sync_file['source']} (expected {sync_file.get('orig_md5')}, got {sync_file.get('md5')}). Skipping copy."
+                        )
+                        synced_file_list.append(
+                            {
+                                "source": sync_file["source"],
+                                "target": sync_file["target"],
+                                "copy_ok": False,
+                                "verified": False,
+                                "reason": "md5_mismatch",
+                                "sidecar": "md5",
+                                "sidecar_copy_ok": False,
+                            }
+                        )
+                        continue
+                else:
+                    # No md5 sidecar; compute and write a .blake3 sidecar before copy
+                    try:
+                        b3 = Hasher.blake3(sync_file["source"])  # streamed
+                        blake3_filename = f"{sync_file['source']}.blake3"
+                        with open(blake3_filename, "w") as bf:
+                            bf.write(f"{b3}\n")
+                    except Exception as ex:
+                        M.warn(f"Could not write blake3 sidecar for {sync_file['source']}: {ex}")
                 if not exists(sync_file["target"]):
                     makedirs(dirname(sync_file["target"]), exist_ok=True)
                     target = shutil.copyfile(sync_file["source"], sync_file["target"])
                     if isfile(target):
                         copy_ok = True
-                target_md5 = Hasher.md5(sync_file["target"])
+                # Post-copy verification using block-by-block comparison
+                verified = False
+                if isfile(sync_file["target"]):
+                    verified = Hasher.equals(sync_file["source"], sync_file["target"])
+                # Copy sidecar after successful verification
+                sidecar = ""
+                sidecar_copy_ok = False
+                if verified:
+                    src_md5 = f"{sync_file['source']}.md5"
+                    src_b3 = f"{sync_file['source']}.blake3"
+                    if isfile(src_md5):
+                        sidecar = "md5"
+                        dst_md5 = f"{sync_file['target']}.md5"
+                        try:
+                            shutil.copyfile(src_md5, dst_md5)
+                            sidecar_copy_ok = isfile(dst_md5)
+                        except Exception as ex:
+                            M.warn(f"Could not copy md5 sidecar for {sync_file['source']}: {ex}")
+                    elif isfile(src_b3):
+                        sidecar = "blake3"
+                        dst_b3 = f"{sync_file['target']}.blake3"
+                        try:
+                            shutil.copyfile(src_b3, dst_b3)
+                            sidecar_copy_ok = isfile(dst_b3)
+                        except Exception as ex:
+                            M.warn(f"Could not copy blake3 sidecar for {sync_file['source']}: {ex}")
                 synced_file_list.append(
                     {
                         "source": sync_file["source"],
                         "target": sync_file["target"],
-                        "md5": target_md5,
                         "copy_ok": copy_ok,
-                        "md5_ok": target_md5 == sync_file["md5"]
-                        and target_md5 == sync_file["orig_md5"],
+                        "verified": verified,
+                        "reason": "",
+                        "sidecar": sidecar,
+                        "sidecar_copy_ok": sidecar_copy_ok,
                     }
                 )
 
                 ###
-                # Check md5 sum again
+                # Post-copy verification done via block-by-block compare above
                 ###
 
                 ###
@@ -283,9 +347,19 @@ def sync(
                 sort_by="source",
                 column_options={"justify": "left", "vertical": "middle"},
                 row_style=lambda row: (
-                    "red"
-                    if not row["md5_ok"]
-                    else "yellow" if not row["copy_ok"] else None
+                    "yellow"
+                    if not row.get("copy_ok")
+                    else (
+                        "red"
+                        if (
+                            not row.get("verified")
+                            or (
+                                row.get("sidecar") in ("md5", "blake3")
+                                and not row.get("sidecar_copy_ok")
+                            )
+                        )
+                        else None
+                    )
                 ),
             )
 
