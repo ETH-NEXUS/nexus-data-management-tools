@@ -4,6 +4,7 @@ import click
 import glob
 import re
 import shutil
+import yaml
 from os.path import join, isfile, exists, dirname
 from os import makedirs
 from sys import exit
@@ -17,6 +18,7 @@ try:
         write_blake3_sidecar,
         copy_matching_sidecar,
     )
+    from .metadata import load_metadata_sources
 except ImportError:
     from helpers import TableOutput as T, Message as M, Hasher  # type: ignore
     from config import options_from_source  # type: ignore
@@ -25,6 +27,7 @@ except ImportError:
         write_blake3_sidecar,
         copy_matching_sidecar,
     )
+    from metadata import load_metadata_sources  # type: ignore
 
 from labkey.api_wrapper import APIWrapper
 from labkey.query import QueryFilter
@@ -154,6 +157,24 @@ def sync(
                 "target": join(repository_folder, final_repository_filename),
             }
         )
+
+    # Load external metadata sources from the local drop folder YAML and print a summary
+    metadata_sources_cfg = None
+    try:
+        with open(join(drop_folder, "sync.yml"), "r") as cf:
+            _local_cfg = yaml.safe_load(cf) or {}
+            metadata_sources_cfg = _local_cfg.get("metadata_sources")
+    except Exception:
+        metadata_sources_cfg = None
+    if metadata_sources_cfg:
+        M.info("Loading metadata sources...")
+        sources_result = load_metadata_sources(metadata_sources_cfg, drop_folder)
+        summary = [
+            {"name": r.get("name"), "type": r.get("type"), "count": r.get("count"), "status": r.get("status")}
+            for r in sources_result
+        ]
+        if summary:
+            T.out(summary, sort_by="name", column_options={"justify": "left", "vertical": "middle"})
 
     # Building LabKey rows is deferred until write-back is implemented.
 

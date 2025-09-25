@@ -13,5 +13,5 @@ dependencies:
     - rich==14.1.0
     - click==8.3.0
     - python-dotenv==1.0.1
-    - deepmerge==2.0
     - blake3==1.0.6
+    - openpyxl==3.1.5

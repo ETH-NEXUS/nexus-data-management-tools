@@ -1,11 +1,10 @@
-drop_folder: DROP
 drop_filename_regex: "[^\/]+\/(?P<phase>[^\/]+)\/.*(?P<seq>SEQ_[A-Z]{5}).*(?P<prefix>(?P<lib>[A-Z]{3}_[A-Z]{6})_[A-Z][0-9]+_[A-Z][0-9]{3})_(?P<suffix>[^.]+)"
 drop_filename_filter: "**/*.fastq.gz"
- # Note: The regex is applied to the source path after removing the drop_folder prefix
+ # Note: The regex is applied to the source path after removing the drop folder path
  #       (and any leading slash). Use named groups like <phase>, <seq>, <lib>, <prefix>, <suffix>.
- #       Example: a nested path under DROP/ must match the groups above.
- # The glob is evaluated under drop_folder to discover candidate files.
-repository_folder: data/repository
+ #       Example: a nested path under the drop folder must match the groups above.
+ # The glob is evaluated relative to the selected drop folder to discover candidate files.
+repository_folder: /cluster/work/nexusintercept/data-repository
  # Template for the destination path relative to repository_folder.
  # Supported placeholders:
  #   <phase>, <lib>, <seq>, <prefix>, <suffix> (from regex)
@@ -13,7 +12,7 @@ repository_folder: data/repository
  #   <hash> (CRC32 of file contents when filename_sequence: hash)
 repository_filename: scRNA/raw/<phase>/<lib>/<lib>_<seq>_r<run>__<suffix>.fastq.gz
  # Destination for archiving/moving successfully processed drop files (reserved for future use).
-processed_folder: data/processed
+processed_folder: /cluster/work/nexusintercept/data-processed
 
 # Filename sequencing for collisions / canonical naming:
 # - run  : Replace <run> with an integer starting at 1 and increment if a

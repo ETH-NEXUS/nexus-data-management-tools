@@ -40,7 +40,7 @@ The tool prepares row data for LabKey insertion, including optional aggregation 
 - MD5 checksum computation of source files; optional validation against sidecar `.md5` files.
 - LabKey presence check for the target path using the `labkey` Python SDK.
 - Tabular console output using `rich`, with colored styling for quick status review.
-- Config layering: global `dm/sync.yml` is deep-merged with per-drop-folder `sync.yml`.
+
 
 ---
 
@@ -50,9 +50,7 @@ The tool prepares row data for LabKey insertion, including optional aggregation 
   - `sync`: main command that performs discovery, validation, path rendering, checksum verification, LabKey query, and optional copying.
   - `check`: simple command to verify LabKey connectivity.
 - `dm/config.py`
-  - `options_from_source()`: `click` decorator that merges configuration from:
-    - Global: `dm/sync.yml`
-    - Local: `<drop_folder>/sync.yml`
+  - `options_from_source()`: `click` decorator that loads configuration from the `<drop_folder>/sync.yml` only (no global merge). Use `dm/sync.yml.TEMPLATE` as a starting point for creating per-drop configs.
 - `dm/functions.py`
   - `now(date_format)`: returns current local time string in given format.
   - `drop_file_mtime(filename, date_format)`: returns mtime of a file.
@@ -60,9 +58,8 @@ The tool prepares row data for LabKey insertion, including optional aggregation 
   - `Message`: colored console messages.
   - `TableOutput`: pretty table printer using `rich`.
   - `Hasher`: `crc32` and `md5` helpers.
-  - `Executor`: shell execution helper (currently unused).
-- `dm/sync.yml`
-  - Example/global configuration with defaults for sync operation and LabKey mapping.
+- `dm/sync.yml.TEMPLATE`
+  - Template configuration to copy into each drop folder as `<drop_folder>/sync.yml`.
 - `environment.yml`
   - Conda environment specification (Python 3.10 + pip dependencies).
 - `Makefile`
@@ -91,25 +88,23 @@ conda activate dm
 ```
 
 Note:
-- `environment.yml` currently contains a `prefix:` pointing to a local path. You can remove that line or override the environment name with `-n dm` as shown above.
+This project uses a standard, portable `environment.yml` without a hard-coded `prefix:`.
 
 3) Verify dependencies (installed via pip in the environment):
-- `pyyaml`, `labkey`, `yachalk`, `rich`, `click`, `python-dotenv`, `deepmerge`
+- `pyyaml`, `labkey`, `yachalk`, `rich`, `click`, `python-dotenv`, `openpyxl`, `blake3`
 
 ---
 
 ## Configuration
 
-Configuration is loaded and deep-merged from two YAML files:
+Configuration is loaded from a single YAML file located in the drop folder:
 
-- Global: `dm/sync.yml` (shipped in this repo)
-- Local: `<drop_folder>/sync.yml` (must exist in the drop folder you pass via `--drop-folder`)
+- Local: `<drop_folder>/sync.yml` (must exist in the drop folder you pass via `--drop-folder`).
 
-The local drop-folder config overrides values from the global config.
+Use `dm/sync.yml.TEMPLATE` as a reference template for creating per-drop sync files. The drop folder path itself is provided only via the CLI option `--drop-folder` and is not included in any YAML.
 
 Key settings in `sync.yml`:
 
-- `drop_folder`: Path to the drop directory (only used in examples; you pass this via CLI).
 - `drop_filename_filter`: Glob pattern to find files (e.g., `**/*.fastq.gz`).
 - `drop_filename_regex`: Regex with named groups to parse metadata from file paths. Example groups used: `phase`, `seq`, `prefix`, `lib`, `suffix`.
 - `repository_folder`: Root folder where files are to be synchronized.
@@ -123,6 +118,39 @@ Key settings in `sync.yml`:
   - `schema`: Target schema (e.g., `exp`) — see Known Limitations for a note
   - `table`: Target table (e.g., `data` or `scRNA_Experiments`) — see Known Limitations
   - `context`: Optional; not currently used.
+- `metadata_sources`: A list of external metadata sources to load during `sync`. Each item has a `type` and
+  type-specific fields. Supported types:
+  - `labkey`: Load rows from a LabKey table using the configured host/container/schema/table.
+  - `excel`: Load rows from an Excel file (`.xlsx`) using `openpyxl`.
+  - `csv`: Load rows from a CSV file using Python's csv module.
+
+Example `metadata_sources` configuration:
+
+```yaml
+metadata_sources:
+  - name: lk_experiments
+    type: labkey
+    host: your-labkey-host.example.org
+    container: "Your Container"
+    schema: exp
+    table: data
+    columns: [Name, Created, Run, Path_To_Synced_Data]
+    filters:
+      - { field: Path_To_Synced_Data, type: contains, value: "/scRNA/raw/" }
+
+  - name: sample_manifest
+    type: excel
+    path: manifests/sample_manifest.xlsx    # relative to the drop folder unless absolute
+    sheet: Sheet1                           # optional; defaults to active sheet
+
+  - name: barcodes
+    type: csv
+    path: manifests/barcodes.csv            # relative to the drop folder unless absolute
+    delimiter: ","                          # optional; default is comma
+```
+
+Notes:
+- Excel support requires `openpyxl`. This repository includes it in `environment.yml`.
 - `fields`: Mapping of LabKey field names to values. Supports:
   - Placeholders like `<phase>`, `<lib>`, `<seq>`, `<run>`, `<hash>`, `<prefix>`, `<suffix>`
   - Functions: `now()`, `drop_file_mtime()`
@@ -133,7 +161,7 @@ Key settings in `sync.yml`:
 - `lookups`:
   - Optional value translation mapping, e.g., mapping `phase: btki -> BTKi`.
 
-Example global `dm/sync.yml` (excerpt):
+Example template `dm/sync.yml.TEMPLATE` (excerpt):
 
 ```yaml
 drop_filename_regex: "[^\/]+\/(?P<phase>[^\/]+)\/.*(?P<seq>SEQ_[A-Z]{5}).*(?P<prefix>(?P<lib>[A-Z]{3}_[A-Z]{6})_[A-Z][0-9]+_[A-Z][0-9]{3})_(?P<suffix>[^.]+)"
@@ -222,9 +250,10 @@ Inside `dm/dm.py` (`sync` command):
 7. Pre-copy integrity:
    - If a sidecar `.md5` exists: compute the file's MD5 (streamed) and compare to the sidecar value. Files with a mismatch are flagged and will be skipped during copy.
    - If no sidecar `.md5` exists: the tool will compute a BLAKE3 digest and write a `.blake3` sidecar for the source file before copying.
-8. LabKey presence check: Queries LabKey (`QueryFilter` with `CONTAINS` on `Path_To_Synced_Data`) to set `in_labkey=True/False` for each planned target file.
-9. Reporting: Prints a table of planned sync actions with color cues.
-10. Copy (if `--do-it`):
+8. Optional metadata loading: If `metadata_sources` is configured, each source is loaded (LabKey/Excel/CSV) and a summary table (name, type, count, status) is printed.
+9. LabKey presence check: Queries LabKey (`QueryFilter` with `CONTAINS` on your configured `file_list_field`) to set `in_labkey=True/False` for each planned target file.
+10. Reporting: Prints a table of planned sync actions with color cues.
+11. Copy (if `--do-it`):
     - If `.md5` sidecar exists and matches: proceed to copy.
     - If `.md5` sidecar exists and mismatches: skip copy and report an error.
     - If no `.md5` sidecar exists: compute and write a `.blake3` sidecar for the source file, then copy.
