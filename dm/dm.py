@@ -223,18 +223,63 @@ def sync(
                     idx = field_index_cache[index_key]
                     row_match = idx.get(str(key_val))
                     if row_match is not None:
-                        sync_file["meta_found"] = True
-                        sync_file["meta_source"] = src_name
-                        # Optionally attach the matched row for later use
-                        sync_file["meta_row"] = row_match
+                        # Collect matched rows per source for later filename templating
+                        meta_rows = sync_file.setdefault("meta_rows", {})
+                        if src_name not in meta_rows:
+                            meta_rows[src_name] = row_match
+                        # First match establishes primary metadata
+                        if not sync_file["meta_found"]:
+                            sync_file["meta_found"] = True
+                            sync_file["meta_source"] = src_name
+                            # Optionally attach the matched row for later use
+                            sync_file["meta_row"] = row_match
+                # continue checking other rules to populate meta_rows for other sources
+
+        # Recompute target paths after metadata to allow <source.Field> in repository_filename
+        resolved_targets: set[str] = set()
+        meta_placeholder_re = re.compile(r"<([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)>")
+        for sync_file in sync_file_list:
+            # Start with the original template
+            tmpl = repository_filename
+            # Replace regex capture group placeholders
+            for part, value in (sync_file.get("vars") or {}).items():
+                tmpl = re.sub(f"<{part}>", str(value), tmpl)
+            # Replace metadata placeholders using matched rows (per source)
+            def _meta_sub(m):
+                src_name, field_name = m.group(1), m.group(2)
+                # Prefer explicitly matched row for that source
+                row = (sync_file.get("meta_rows") or {}).get(src_name)
+                # Fallback: if primary match came from this source
+                if row is None and sync_file.get("meta_source") == src_name:
+                    row = sync_file.get("meta_row")
+                if row is not None and (field_name in row) and (row[field_name] is not None):
+                    return str(row[field_name])
+                return ""
+            tmpl = meta_placeholder_re.sub(_meta_sub, tmpl)
+
+            # Apply run/hash sequencing and ensure uniqueness across planned targets
+            if filename_sequence == "run":
+                run = 1
+                while True:
+                    candidate = re.sub("<run>", str(run), tmpl)
+                    target_full = join(repository_folder, candidate)
+                    if target_full not in resolved_targets:
+                        resolved_targets.add(target_full)
+                        sync_file["target"] = target_full
                         break
-                    if sync_file["meta_found"]:
-                        break
+                    run += 1
+            elif filename_sequence == "hash":
+                crc = Hasher.crc32(sync_file["source"])
+                candidate = re.sub("<hash>", crc, tmpl)
+                sync_file["target"] = join(repository_folder, candidate)
+            else:
+                sync_file["target"] = join(repository_folder, tmpl)
 
         # Remove internal variable maps before printing any tables
         for _sf in sync_file_list:
             _sf.pop("vars", None)
             _sf.pop("meta_row", None)
+            _sf.pop("meta_rows", None)
 
     # Warn if metadata is required but configuration is missing
     if metadata_required and not metadata_sources_cfg:
@@ -246,6 +291,7 @@ def sync(
     for _sf in sync_file_list:
         _sf.pop("vars", None)
         _sf.pop("meta_row", None)
+        _sf.pop("meta_rows", None)
 
     # Building LabKey rows is deferred until write-back is implemented.
 

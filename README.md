@@ -110,7 +110,7 @@ Key settings in `sync.yml`:
 - `drop_filename_filter`: Glob pattern to find files (e.g., `**/*.fastq.gz`).
 - `drop_filename_regex`: Regex with named groups to parse metadata from file paths. Example groups used: `phase`, `seq`, `prefix`, `lib`, `suffix`.
 - `repository_folder`: Root folder where files are to be synchronized.
-- `repository_filename`: Template for the target filename, e.g., `scRNA/raw/<phase>/<lib>/<lib>_<seq>_r<run>__<suffix>.fastq.gz`. Placeholders are replaced using the named groups and special values.
+- `repository_filename`: Template for the target filename, e.g., `scRNA/raw/<phase>/<lib>/<lib>_<seq>_r<run>__<suffix>.fastq.gz`. Placeholders are replaced using the named groups and special values. Also supports metadata placeholders of the form `<source.Field>` after metadata matching, e.g., `scRNA/raw/<phase>/<lib>/<phase>_<lk_experiments.Name>_r<run>__<suffix>.fastq.gz`.
 - `processed_folder`: Root where processed (or archived) drop files should be moved. (Not yet implemented)
 - `filename_sequence`: Either `run` (increments `<run>`) or `hash` (sets `<hash>` to a short CRC32-derived value).
 - `date_format`: Datetime format string used by functions like `now()` or `drop_file_mtime()`.
