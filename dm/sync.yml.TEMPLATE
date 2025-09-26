@@ -10,6 +10,7 @@ repository_folder: /cluster/work/nexusintercept/data-repository
  #   <phase>, <lib>, <seq>, <prefix>, <suffix> (from regex)
  #   <run>  (auto-incremented when filename_sequence: run)
  #   <hash> (CRC32 of file contents when filename_sequence: hash)
+ #   <source.Field> (from matched metadata rows; see metadata_sources and metadata_match)
 repository_filename: scRNA/raw/<phase>/<lib>/<lib>_<seq>_r<run>__<suffix>.fastq.gz
  # Destination for archiving/moving successfully processed drop files (reserved for future use).
 processed_folder: /cluster/work/nexusintercept/data-processed
@@ -42,14 +43,13 @@ labkey:
   schema: exp.data
   table: scRNA_Experiments
 
+# Reserved for future write-back (not used in the current version):
 # Define values for fields in the LabKey table (defined in 'labkey' above).
 # You can use placeholders (<phase>, <seq>, <lib>, <prefix>, <suffix>, <run>, <hash>)
 # captured by drop_filename_regex. Additionally, the following functions are supported:
 # - now()              : Current local date-time formatted per date_format
 # - drop_file_mtime()  : Last modification time of the source file (formatted)
 # Notes:
-# - The field designated as 'file_list' in field_parameters will be set automatically
-#   to the final repository path of the file.
 # - Non-string values (e.g., booleans) should be written using YAML types (True/False).
 fields:
   Name: <lib>_<seq>_r<run> #GEX-CJBAIF_SEQ-NYCTQ_r1
@@ -61,13 +61,14 @@ fields:
   Date_Of_Uploading: drop_file_mtime()
   Path_To_Synced_Data:
 
-# Define special roles for fields used during aggregation:
-# - file_list           : The field that will contain a (possibly aggregated) list of paths
-# - file_list_aggregator: Grouping key used to combine multiple file_list entries into one row
+# Define special roles for fields:
+# - file_list            : Used now to check LabKey presence via a CONTAINS filter on this field
+# - file_list_aggregator : Reserved for future aggregation during write-back
 field_parameters:
   Path_To_Synced_Data: file_list
   Uploaded_Filename_Prefix: file_list_aggregator
 
+# Reserved for future write-back (not used in current version):
 # Lookups translate captured values to another representation.
 # Example: Map a regex-captured phase to a canonical label.
 # Define as nested keys: lookups.phase.<from-value>: <to-value>
