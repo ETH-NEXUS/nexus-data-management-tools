@@ -1,19 +1,20 @@
-drop_filename_regex: "[^\/]+\/(?P<phase>[^\/]+)\/.*(?P<seq>SEQ_[A-Z]{5}).*(?P<prefix>(?P<lib>[A-Z]{3}_[A-Z]{6})_[A-Z][0-9]+_[A-Z][0-9]{3})_(?P<suffix>[^.]+)"
+# we assume this config is placed directly in /cluster/work/mtorus/data-drop
+drop_filename_regex: ".*/(?P<main_folder>[^/]+)/(?P<phase>[^/]+)/.*/(?P<uploaded>\d{6}_\d{3}-(?P<hosp_sec>(?P<hosp_pri>[A-Z0-9]+_U)_[a-z0-9]+-\d)_S\d+_R\d_\d+\.fastq\.gz)"
 drop_filename_filter: "**/*.fastq.gz"
  # Note: The regex is applied to the source path after removing the drop folder path
- #       (and any leading slash). Use named groups like <phase>, <seq>, <lib>, <prefix>, <suffix>.
- #       Example: a nested path under the drop folder must match the groups above.
+ #       You can use named groups like <uploaded>, <hosp_sec>, etc. The tool also derives
+ #       <hosp_sec_dot> = <hosp_sec> with '-' replaced by '.' for matching LabKey rows.
  # The glob is evaluated relative to the selected drop folder to discover candidate files.
-repository_folder: /cluster/work/nexusintercept/data-repository
+repository_folder: /cluster/work/mtorus/data-repository
  # Template for the destination path relative to repository_folder.
  # Supported placeholders:
- #   <phase>, <lib>, <seq>, <prefix>, <suffix> (from regex)
+ #   Regex groups, e.g. <uploaded>, and derived groups via metadata_derive (see below)
  #   <run>  (auto-incremented when filename_sequence: run)
  #   <hash> (CRC32 of file contents when filename_sequence: hash)
  #   <source.Field> (from matched metadata rows; see metadata_sources and metadata_match)
-repository_filename: scRNA/raw/<phase>/<lib>/<lib>_<seq>_r<run>__<suffix>.fastq.gz
+repository_filename: <main_folder>/<phase>/raw/<patient_id>/<sample_id>/<patient_id>_<visit>-<sample_id>-<technology>-r<run>v<sop version>__<uploaded>
  # Destination for archiving/moving successfully processed drop files (reserved for future use).
-processed_folder: /cluster/work/nexusintercept/data-processed
+processed_folder: /cluster/work/mtorus/data-processed
 
 # Filename sequencing for collisions / canonical naming:
 # - run  : Replace <run> with an integer starting at 1 and increment if a
@@ -38,13 +39,12 @@ date_format: '%Y-%m-%d %H:%M:%S'
 #            name (without dots) and 'table' is the exact table name.
 labkey:
   host: intercept-labkey-dev.nexus.ethz.ch
-  container: LOOP Intercept
+  container: "LOOP Intercept"
   context: 
-  schema: exp.data
-  table: scRNA_Experiments
+  schema: exp
+  table: 16S_Experiments
 
-# Reserved for future write-back (not used in the current version):
-# Define values for fields in the LabKey table (defined in 'labkey' above).
+# Define values for fields in the write-back LabKey table (defined in 'labkey' above).
 # You can use placeholders (<phase>, <seq>, <lib>, <prefix>, <suffix>, <run>, <hash>)
 # captured by drop_filename_regex. Additionally, the following functions are supported:
 # - now()              : Current local date-time formatted per date_format
@@ -52,21 +52,28 @@ labkey:
 # Notes:
 # - Non-string values (e.g., booleans) should be written using YAML types (True/False).
 fields:
-  Name: <lib>_<seq>_r<run> #GEX-CJBAIF_SEQ-NYCTQ_r1
-  Project_Phase: <phase>
-  Run_Number: <run>
-  Uploaded_Filename_Prefix: <prefix> #GEX_CJBAIF_S18_L004
-  Data_synced: True
-  Date_Of_Syncing: now()
-  Date_Of_Uploading: drop_file_mtime()
-  Path_To_Synced_Data:
+  Name: <samples.Name>-r<run>v1.0__<uploaded>
+  Project Phase: Validation
+  Run Number: <run>
+  SOP Version: 1.0
+  SOP Name: ""
+  Data Synced: True
+  Date Of Syncing: now()
+  Date Of Uploading: drop_file_mtime()
+  Path To Synced Data: 
+  Uploaded File Name: <uploaded>
+  Technology_Sample_Id: <samples.Name>
+  # Primary_Sample_Id is derived from Name as <patient_id>_<visit>-<sample_type>
+  Primary_Sample_Id: <patient_id>_<visit>-<sample_type>
+  Hospital Primary Sample Id: ""
+  Hospital Secondary Sample Id: <hosp_secondary_id>
+  Md5sum: ""
 
 # Define special roles for fields:
 # - file_list            : Used now to check LabKey presence via a CONTAINS filter on this field
 # - file_list_aggregator : Reserved for future aggregation during write-back
 field_parameters:
-  Path_To_Synced_Data: file_list
-  Uploaded_Filename_Prefix: file_list_aggregator
+  Path To Synced Data: file_list
 
 # Reserved for future write-back (not used in current version):
 # Lookups translate captured values to another representation.
@@ -83,25 +90,13 @@ lookups:
 # - excel: requires path; optional sheet
 # - csv  : requires path; optional delimiter
 metadata_sources:
-  - name: lk_experiments
+  - name: samples
     type: labkey
-    host: your-labkey-host.example.org
-    container: "Your Container"
-    schema: exp
-    table: data
-    columns: [Name, Uploaded_Filename_Prefix, Path_To_Synced_Data]
-    filters:
-      - { field: Path_To_Synced_Data, type: contains, value: "/scRNA/raw/" }
-
-  - name: sample_manifest
-    type: excel
-    path: manifests/sample_manifest.xlsx  # relative to the drop folder unless absolute
-    sheet: Sheet1                        # optional
-
-  - name: barcodes
-    type: csv
-    path: manifests/barcodes.csv         # relative to the drop folder unless absolute
-    delimiter: ","                       # optional; default is comma
+    host: intercept-labkey-dev.nexus.ethz.ch
+    container: "LOOP Intercept"
+    schema: lists
+    table: 16S_Sequencing_Samples
+    columns: [Name, Hospital Secondary Sample Id]
 
 
 # Optional: Rules to find the metadata row for each file before syncing.
@@ -113,17 +108,42 @@ metadata_sources:
 # successful rule wins and annotates the file with meta_found, meta_source,
 # meta_key, and meta_row.
 metadata_match:
-  # Default key template (can be overridden in each rule below)
-  key_template: <prefix>
-  # Ordered list of search rules
+  # Use the hospital secondary id from filename; normalization is done via replacements.before_match
+  key_template: <hosp_sec>
   search:
-    - source: lk_experiments
-      field: Uploaded_Filename_Prefix
-      # key_template: <prefix>         # optional, falls back to default
-    - source: sample_manifest
-      field: Prefix
-      key_template: <lib>_<seq>
+    - source: samples
+      field: Hospital Secondary Sample Id
 
 # If true, a metadata match is required to allow copying. Files without a
 # matching metadata row will be skipped with reason "metadata_missing".
-metadata_required: false
+metadata_required: true
+
+# Derive variables from matched metadata to drive folder layout and filenames
+metadata_derive:
+  - source: samples
+    field: Name
+    regex: "^(?P<patient_id>MTR-[A-Z]-\d{3})_(?P<visit>V\d{2})-(?P<sample_id>[A-Z]{2}-\d{2}-\d{2})-(?P<technology>[A-Z]*)$"
+  - source: samples
+    field: Hospital Secondary Sample Id
+    regex: "^(?P<hosp_secondary_id>.+)$"
+
+# Optional: Character/string replacements
+# - before_match: applied to captured/derived variables prior to metadata matching and templating
+# - before_writeback: applied either to variables (target: var) before rendering or to final fields (target: field)
+#   Rule format:
+#     - target: var|field
+#       name: <variable-or-field-name>
+#       replace: <string-to-replace>
+#       with: <replacement-string>
+replacements:
+  before_match:
+    - target: var
+      name: hosp_sec
+      replace: "-"
+      with: "."
+  before_writeback:
+    # Example: normalize Primary_Sample_Id hyphens to underscores
+    - target: field
+      name: Primary_Sample_Id
+      replace: "-"
+      with: "_"
