@@ -1,6 +1,6 @@
 import csv
 from os.path import isabs, join
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 # Package-safe imports with fallback for script execution
 try:  # LabKey and helpers
@@ -56,7 +56,7 @@ def _load_labkey_rows(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     return result.get("rows", [])
 
 
-def _load_excel_rows(path: str, sheet: str | None = None) -> List[Dict[str, Any]]:
+def _load_excel_rows(path: str, sheet: Optional[str] = None) -> List[Dict[str, Any]]:
     if load_workbook is None:
         raise RuntimeError(
             "openpyxl is required to read Excel files. Please install and configure it."
@@ -92,7 +92,7 @@ def load_metadata_sources(sources_cfg: List[Dict[str, Any]], drop_folder: str) -
         stype = (src.get("type") or "").lower()
         name = src.get("name") or stype
         status = "ok"
-        error: str | None = None
+        error: Optional[str] = None
         rows: List[Dict[str, Any]] = []
         try:
             if stype == "labkey":

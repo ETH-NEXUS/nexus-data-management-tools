@@ -1,5 +1,6 @@
 from os.path import isfile
 import shutil
+from typing import Optional, Tuple
 
 # Package-safe imports with fallback for script execution
 try:
@@ -8,7 +9,7 @@ except ImportError:  # pragma: no cover
     from helpers import Hasher, Message as M  # type: ignore
 
 
-def read_md5_sidecar(source_path: str) -> str | None:
+def read_md5_sidecar(source_path: str) -> Optional[str]:
     """Return expected MD5 from a `.md5` sidecar if present, else None.
     Reads the first token on the first line.
     """
@@ -36,7 +37,7 @@ def write_blake3_sidecar(source_path: str) -> bool:
         return False
 
 
-def copy_matching_sidecar(source_path: str, target_path: str) -> tuple[str, bool]:
+def copy_matching_sidecar(source_path: str, target_path: str) -> Tuple[str, bool]:
     """Copy a matching sidecar (`.md5` or `.blake3`) alongside the target.
     Returns (sidecar_type, copy_ok). sidecar_type is "md5", "blake3", or "" if none.
     """
