@@ -3,15 +3,14 @@ channels:
   - defaults
   - conda-forge
 dependencies:
-  - python=3.10.14=hb885b13_1
-  - pip=24.2=py310hca03da5_0
+  - pip
   - pip:
     - pyyaml==6.0.2
     - easydict==1.13
-    - labkey==4.0.1
+    - labkey==3.4.0
     - yachalk==0.1.7
     - rich==14.1.0
-    - click==8.3.0
+    - click==8.1.8
     - python-dotenv==1.0.1
     - blake3==1.0.6
     - openpyxl==3.1.5
