@@ -191,57 +191,86 @@ def sync(
         return planned
 
     def load_and_match_metadata(sync_file_list: list):
-        metadata_sources_cfg = cfg.get("metadata_sources")
-        metadata_match_cfg = cfg.get("metadata_match")
-        if not metadata_sources_cfg:
-            return None, None
-        M.info("Loading metadata sources...")
-        for src in (metadata_sources_cfg or []):
+        """Simplified metadata matching: for each file and rule, render key and do a direct
+        LabKey select_rows(schema, table) with EQUAL filter on the configured field.
+        Uses the top-level LabKey connection. Resolves field caption-to-name once per source.
+        """
+        metadata_sources_cfg = cfg.get("metadata_sources") or []
+        metadata_match_cfg = cfg.get("metadata_match") or {}
+        if not metadata_sources_cfg or not metadata_match_cfg:
+            return [], {}
+
+        # Map sources by name and check connectivity
+        src_by_name = {}
+        for src in metadata_sources_cfg:
+            sname = src.get("name") or src.get("type")
             if (src or {}).get("type") == "labkey":
-                _lk_check(src.get("schema", ""), src.get("table", ""), f"metadata source '{src.get('name','')}'")
-        sources_result = load_metadata_sources(metadata_sources_cfg, drop_folder, labkey)
-        summary = [{"name": r.get("name"), "type": r.get("type"), "count": r.get("count"), "status": r.get("status")} for r in sources_result]
-        if summary:
-            T.out(summary, sort_by="name", column_options={"justify": "left", "vertical": "middle"})
-        sources_by_name = {r.get("name"): r for r in sources_result if r.get("status") == "ok"}
-        # Perform metadata matching per file if rules are provided
-        if metadata_match_cfg and isinstance(metadata_match_cfg, dict):
-            default_key_tmpl = metadata_match_cfg.get("key_template")
-            rules = metadata_match_cfg.get("search") or []
-            field_index_cache: dict[tuple[str, str], dict[str, dict]] = {}
-            for sf in sync_file_list:
-                sf["meta_found"], sf["meta_source"], sf["meta_key"] = False, "", ""
-                vars_map = sf.get("vars", {})
-                for rule in rules:
-                    src_name, field = rule.get("source"), rule.get("field")
-                    key_tmpl = rule.get("key_template", default_key_tmpl)
-                    if not (src_name and field and key_tmpl):
-                        continue
-                    key_val = key_tmpl
-                    for part, value in vars_map.items():
-                        key_val = re.sub(f"<{part}>", str(value), key_val)
-                    sf["meta_key"] = key_val
-                    src = sources_by_name.get(src_name)
-                    if not src:
-                        M.warn(f"Metadata source '{src_name}' not available; skipping rule")
-                        continue
-                    # Build index
-                    index_key = (src_name, field)
-                    if index_key not in field_index_cache:
-                        idx = {}
-                        for row in src.get("rows", []):
-                            v = row.get(field)
-                            if v is not None and str(v) not in idx:
-                                idx[str(v)] = row
-                        field_index_cache[index_key] = idx
-                    row_match = field_index_cache[index_key].get(str(key_val))
-                    if row_match is not None:
+                _lk_check(src.get("schema", ""), src.get("table", ""), f"metadata source '{sname}'")
+            src_by_name[sname] = src
+
+        # Cache column name resolution per (schema, table)
+        qmeta_cache: dict[tuple[str, str], dict] = {}
+        def resolve_field(schema: str, table: str, field: str) -> str:
+            key = (schema, table)
+            if key not in qmeta_cache:
+                try:
+                    qmeta_cache[key] = api.query.get_query(schema, table) or {}
+                except Exception:
+                    qmeta_cache[key] = {}
+            cols = (qmeta_cache[key] or {}).get("columns", [])
+            def _norm(s: str) -> str:
+                return "" if s is None else re.sub(r"[^A-Za-z0-9]", "", str(s)).lower()
+            want = _norm(field)
+            for c in cols or []:
+                nm = c.get("name")
+                cp = c.get("caption")
+                if (_norm(nm) == want) or (_norm(cp) == want):
+                    return nm or field
+            return field
+
+        # Perform direct lookups
+        default_key_tmpl = metadata_match_cfg.get("key_template")
+        rules = metadata_match_cfg.get("search") or []
+        for sf in sync_file_list:
+            sf["meta_found"], sf["meta_source"], sf["meta_key"] = False, "", ""
+            vars_map = sf.get("vars", {})
+            for rule in rules:
+                src_name, field = rule.get("source"), rule.get("field")
+                key_tmpl = rule.get("key_template", default_key_tmpl)
+                if not (src_name and field and key_tmpl):
+                    continue
+                # Render key
+                key_val = key_tmpl
+                for part, value in vars_map.items():
+                    key_val = re.sub(f"<{part}>", str(value), key_val)
+                key_val = str(key_val).strip()
+                sf["meta_key"] = key_val
+                # Resolve source
+                src_cfg = src_by_name.get(src_name)
+                if not src_cfg or (src_cfg.get("type") != "labkey"):
+                    M.warn(f"Metadata source '{src_name}' not available; skipping rule")
+                    continue
+                schema = src_cfg.get("schema")
+                table = src_cfg.get("table")
+                rfield = resolve_field(schema, table, field)
+                # Direct query
+                try:
+                    flt = [QueryFilter(rfield, key_val, QueryFilter.Types.EQUAL)]
+                    result = api.query.select_rows(schema, table, filter_array=flt)
+                    rows = result.get("rows", [])
+                    if rows:
+                        row = rows[0]
                         meta_rows = sf.setdefault("meta_rows", {})
                         if src_name not in meta_rows:
-                            meta_rows[src_name] = row_match
+                            meta_rows[src_name] = row
                         if not sf["meta_found"]:
-                            sf["meta_found"], sf["meta_source"], sf["meta_row"] = True, src_name, row_match
-        return sources_result, sources_by_name
+                            sf["meta_found"], sf["meta_source"], sf["meta_row"] = True, src_name, row
+                        # Found a match; stop at first successful rule for this file
+                        break
+                except Exception as ex:
+                    M.warn(f"LabKey lookup failed for {schema}.{table}.{rfield} == '{key_val}': {ex}")
+                    continue
+        return [], {}
 
     def derive_and_finalize_targets(sync_file_list: list):
         metadata_derive_cfg = cfg.get("metadata_derive")

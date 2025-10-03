@@ -46,22 +46,55 @@ def _load_labkey_rows(cfg: Dict[str, Any], global_labkey: Dict[str, Any]) -> Lis
         context_path=global_labkey.get("context") or None,
         use_ssl=bool(global_labkey.get("use_ssl", True)),
     )
+    # Resolve field keys (names) for columns/filters, tolerating label-vs-name mismatches
+    def _norm(s: str) -> str:
+        return "" if s is None else "".join(ch for ch in str(s) if ch.isalnum()).lower()
+
+    resolved_columns = None
     filters = []
-    for f in cfg.get("filters", []) or []:
-        ftype = (f.get("type") or "").lower()
-        fval = f.get("value")
-        fname = f.get("field")
-        if not (fname and fval is not None):
-            continue
-        if ftype == "contains":
-            filters.append(QueryFilter(fname, fval, QueryFilter.Types.CONTAINS))
-        elif ftype in ("eq", "equals", "="):
-            filters.append(QueryFilter(fname, fval, QueryFilter.Types.EQUAL))
-        else:
-            # default to EQUAL
-            filters.append(QueryFilter(fname, fval, QueryFilter.Types.EQUAL))
+    try:
+        qmeta = api.query.get_query(cfg["schema"], cfg["table"])  # includes column metadata
+        cols_meta = qmeta.get("columns", []) if isinstance(qmeta, dict) else []
+        # Build maps by normalized name and caption
+        by_name = { _norm(c.get("name")): c.get("name") for c in cols_meta if c.get("name") }
+        by_caption = { _norm(c.get("caption")): c.get("name") for c in cols_meta if c.get("caption") and c.get("name") }
+        def resolve_field(field: str) -> str:
+            key = _norm(field)
+            return by_name.get(key) or by_caption.get(key) or field
+        # Resolve requested columns, if any
+        if cfg.get("columns"):
+            resolved_columns = [resolve_field(c) for c in (cfg.get("columns") or [])]
+        # Resolve filters
+        for f in cfg.get("filters", []) or []:
+            ftype = (f.get("type") or "").lower()
+            fval = f.get("value")
+            fname = f.get("field")
+            if not (fname and fval is not None):
+                continue
+            rfield = resolve_field(fname)
+            if ftype == "contains":
+                filters.append(QueryFilter(rfield, fval, QueryFilter.Types.CONTAINS))
+            elif ftype in ("eq", "equals", "="):
+                filters.append(QueryFilter(rfield, fval, QueryFilter.Types.EQUAL))
+            else:
+                filters.append(QueryFilter(rfield, fval, QueryFilter.Types.EQUAL))
+    except Exception:
+        # If metadata fetch fails, fall back to raw names
+        for f in cfg.get("filters", []) or []:
+            ftype = (f.get("type") or "").lower()
+            fval = f.get("value")
+            fname = f.get("field")
+            if not (fname and fval is not None):
+                continue
+            if ftype == "contains":
+                filters.append(QueryFilter(fname, fval, QueryFilter.Types.CONTAINS))
+            elif ftype in ("eq", "equals", "="):
+                filters.append(QueryFilter(fname, fval, QueryFilter.Types.EQUAL))
+            else:
+                filters.append(QueryFilter(fname, fval, QueryFilter.Types.EQUAL))
+
     result = api.query.select_rows(
-        cfg["schema"], cfg["table"], columns=cfg.get("columns"), filter_array=filters
+        cfg["schema"], cfg["table"], columns=resolved_columns, filter_array=filters
     )
     return result.get("rows", [])
 
