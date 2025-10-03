@@ -1,5 +1,5 @@
 # we assume this config is placed directly in /cluster/work/mtorus/data-drop
-drop_filename_regex: '.*/(?P<main_folder>[^/]+)/(?P<phase>[^/]+)/.*/(?P<uploaded>\d{6}_\d{3}-(?P<hosp_sec>(?P<hosp_pri>[A-Z0-9]+_U)_[a-z0-9]+-\d)_S\d+_R\d_\d+\.fastq\.gz)'
+drop_filename_regex: '(?P<phase>[^/]+)/.*/(?P<uploaded>\d{6}_\d{3}-(?P<hosp_sec>(?P<hosp_pri>[A-Z0-9]+_[A-Z]{1})_[a-z0-9]+-\d)_S\d+_R\d_\d+\.fastq\.gz)'
 drop_filename_filter: '**/*.fastq.gz'
  # Note: The regex is applied to the source path after removing the drop folder path
  #       You can use named groups like <uploaded>, <hosp_sec>, etc. The tool also derives
@@ -12,7 +12,7 @@ repository_folder: /cluster/work/mtorus/data-repository
  #   <run>  (auto-incremented when filename_sequence: run)
  #   <hash> (CRC32 of file contents when filename_sequence: hash)
  #   <source.Field> (from matched metadata rows; see metadata_sources and metadata_match)
-repository_filename: <main_folder>/<phase>/raw/<patient_id>/<sample_id>/<patient_id>_<visit>-<sample_id>-<technology>-r<run>v<sop version>__<uploaded>
+repository_filename: seq_16S/<phase>/raw/<patient_id>/<sample_id>/<patient_id>_<visit>-<sample_id>-<technology>-r<run>v<sop version>__<uploaded>
  # Destination for archiving/moving successfully processed drop files (reserved for future use).
 processed_folder: /cluster/work/mtorus/data-processed
 
@@ -42,7 +42,7 @@ labkey:
   container: 'LOOP Intercept'
   context:
   use_ssl: false
-  schema: exp
+  schema: exp.data
   table: 16S_Experiments
 
 # Define values for fields in the write-back LabKey table (defined in 'labkey' above).

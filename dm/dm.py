@@ -126,12 +126,13 @@ def sync(
         M.debug(f"Using drop_filename_filter: {drop_filename_filter}")
         drop_files = glob.glob(join(drop_folder, drop_filename_filter), recursive=True)
         planned: list = []
+        skipped: list = []
         for source_filename in drop_files:
             rel = re.sub(r"^/", "", source_filename.replace(drop_folder, ""))
             match = re.match(drop_filename_regex, rel)
             if not match:
-                M.error(f"File {rel} does not match drop_filename_regex!")
-                exit(1)
+                skipped.append(rel)
+                continue
             caps = match.groupdict()
             # Apply before_match replacements to captured variables
             _repl_cfg = (cfg.get("replacements") or {})
@@ -162,6 +163,19 @@ def sync(
                 crc = Hasher.crc32(join(drop_folder, rel))
                 final = re.sub("<hash>", crc, inter)
             planned.append({"source": join(drop_folder, rel), "target": join(repository_folder, final), "vars": caps})
+
+        # Log discovery and selection summary
+        M.info(f"Discovered {len(drop_files)} file(s) via drop_filename_filter; matched {len(planned)}, skipped {len(skipped)} by drop_filename_regex.")
+        if skipped:
+            M.info("Showing up to first 20 skipped examples (non-matching regex):")
+            try:
+                T.out(
+                    [{"source": s, "status": "skipped_non_match"} for s in skipped[:20]],
+                    sort_by="source",
+                    column_options={"justify": "left", "vertical": "middle"},
+                )
+            except Exception:
+                pass
         return planned
 
     def load_and_match_metadata(sync_file_list: list):
