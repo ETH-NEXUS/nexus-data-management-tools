@@ -12,7 +12,7 @@ repository_folder: /cluster/work/mtorus/data-repository
  #   <run>  (auto-incremented when filename_sequence: run)
  #   <hash> (CRC32 of file contents when filename_sequence: hash)
  #   <source.Field> (from matched metadata rows; see metadata_sources and metadata_match)
-repository_filename: seq_16S/<phase>/raw/<patient_id>/<sample_id>/<patient_id>_<visit>-<sample_id>-<technology>-r<run>v<sop version>__<uploaded>
+repository_filename: seq_16S/<phase>/raw/<patient_id>/<sample_id>/<patient_id>_<visit>-<sample_id>-<technology>-r<run>v1.0__<uploaded>
  # Destination for archiving/moving successfully processed drop files (reserved for future use).
 processed_folder: /cluster/work/mtorus/data-processed
 
@@ -65,7 +65,7 @@ fields:
   Uploaded File Name: <uploaded>
   Technology_Sample_Id: <samples.Name>
   # Primary_Sample_Id is derived from Name as <patient_id>_<visit>-<sample_type>
-  Primary_Sample_Id: <patient_id>_<visit>-<sample_type>
+  Primary_Sample_Id: <sample_name_prefix>
   Hospital Primary Sample Id: ""
   Hospital Secondary Sample Id: <hosp_secondary_id>
   Md5sum: ""
@@ -125,6 +125,9 @@ metadata_derive:
   - source: samples
     field: Hospital Secondary Sample Id
     regex: '^(?P<hosp_secondary_id>.+)$'
+  - source: samples
+    field: Name
+    regex: '^(?P<sample_name_prefix>MTR-[A-Z]-\d{3}_V\d{2}-[A-Z]{2})'
 
 # Optional: Character/string replacements
 # - before_match: applied to captured/derived variables prior to metadata matching and templating

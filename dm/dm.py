@@ -276,6 +276,21 @@ def sync(
         metadata_derive_cfg = cfg.get("metadata_derive")
         _repl_cfg = (cfg.get("replacements") or {})
         before_match_repls = _repl_cfg.get("before_match") or []
+        # Helper to read a value from a LabKey row tolerating caption vs name and nested captions
+        def _get_row_value(row: dict, field: str):
+            if field in row:
+                return row.get(field)
+            nf = re.sub(r"[^A-Za-z0-9]", "", str(field)).lower()
+            # Exact normalized match
+            for k in row.keys():
+                if re.sub(r"[^A-Za-z0-9]", "", str(k)).lower() == nf:
+                    return row.get(k)
+            # Suffix normalized match (handles paths like Ancestors/.../Hospital_Secondary_Sample_Id)
+            for k in row.keys():
+                nk = re.sub(r"[^A-Za-z0-9]", "", str(k)).lower()
+                if nk.endswith(nf):
+                    return row.get(k)
+            return None
         if metadata_derive_cfg and isinstance(metadata_derive_cfg, list):
             for sf in sync_file_list:
                 for rule in metadata_derive_cfg:
@@ -287,7 +302,7 @@ def sync(
                         row = sf.get("meta_row")
                     if not row:
                         continue
-                    value = row.get(field)
+                    value = _get_row_value(row, field)
                     if value is None:
                         continue
                     try:
@@ -338,6 +353,12 @@ def sync(
                     if target_full not in resolved_targets:
                         resolved_targets.add(target_full)
                         sf["target"] = target_full
+                        # expose <run> for write-back rendering
+                        vars_map = sf.setdefault("vars", {})
+                        try:
+                            vars_map["run"] = str(run)
+                        except Exception:
+                            pass
                         break
                     run += 1
             elif filename_sequence == "hash":
@@ -346,19 +367,11 @@ def sync(
                 sf["target"] = join(repository_folder, candidate)
             else:
                 sf["target"] = join(repository_folder, tmpl)
-        # Preserve variables and metadata for writeback
+        # Preserve variables; keep meta_rows/meta_row for write-back (no meta_for_write)
         for sf in sync_file_list:
             if "tmpl_vars" not in sf:
                 sf["tmpl_vars"] = dict(sf.get("vars") or {})
-            if "meta_for_write" not in sf:
-                sf["meta_for_write"] = {
-                    "primary_source": sf.get("meta_source"),
-                    "primary_row": sf.get("meta_row"),
-                    "rows_by_source": dict((sf.get("meta_rows") or {})),
-                }
             sf.pop("vars", None)
-            sf.pop("meta_row", None)
-            sf.pop("meta_rows", None)
         return sync_file_list
 
     def check_integrity(sync_file_list: list):
@@ -385,8 +398,17 @@ def sync(
         return sync_file_list
 
     def render_plan_table(rows: list):
+        # Drop verbose fields from display
+        display_rows = []
+        for r in rows:
+            if isinstance(r, dict):
+                r2 = dict(r)
+                r2.pop("meta_for_write", None)
+                display_rows.append(r2)
+            else:
+                display_rows.append(r)
         T.out(
-            rows,
+            display_rows,
             sort_by="source",
             column_options={"justify": "left", "vertical": "middle"},
             row_style=lambda row: (
@@ -526,12 +548,22 @@ def sync(
         # Replace <source.Field> placeholders
         def _meta_sub(m):
             src_name, field_name = m.group(1), m.group(2)
-            meta = sync_file.get("meta_for_write") or {}
-            row = (meta.get("rows_by_source") or {}).get(src_name)
-            if row is None and meta.get("primary_source") == src_name:
-                row = meta.get("primary_row")
-            if row is not None and (field_name in row) and (row[field_name] is not None):
+            row = (sync_file.get("meta_rows") or {}).get(src_name)
+            if row is None and sync_file.get("meta_source") == src_name:
+                row = sync_file.get("meta_row")
+            if row is None:
+                return ""
+            # Try direct key, then normalized match, then suffix match
+            if field_name in row and (row[field_name] is not None):
                 return str(row[field_name])
+            nf = re.sub(r"[^A-Za-z0-9]", "", field_name).lower()
+            for k in row.keys():
+                if re.sub(r"[^A-Za-z0-9]", "", str(k)).lower() == nf and row.get(k) is not None:
+                    return str(row.get(k))
+            for k in row.keys():
+                nk = re.sub(r"[^A-Za-z0-9]", "", str(k)).lower()
+                if nk.endswith(nf) and row.get(k) is not None:
+                    return str(row.get(k))
             return ""
         out = re.sub(r"<([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)>", _meta_sub, out)
         # Functions
@@ -567,10 +599,13 @@ def sync(
         for k, v in (fields_cfg or {}).items():
             row[k] = _render_value(sync_file, vars_map, v)
         # Auto-fill common fields if present
-        if "Path_To_Synced_Data" in fields_cfg:
-            row["Path_To_Synced_Data"] = sync_file["target"]
-        if "Uploaded_File_Name" in fields_cfg:
-            row["Uploaded_File_Name"] = basename(sync_file["source"])
+        # Auto-fill with tolerant labels (spaces vs underscores)
+        if any(k in fields_cfg for k in ("Path_To_Synced_Data", "Path To Synced Data")):
+            key = "Path_To_Synced_Data" if "Path_To_Synced_Data" in fields_cfg else "Path To Synced Data"
+            row[key] = sync_file["target"]
+        if any(k in fields_cfg for k in ("Uploaded_File_Name", "Uploaded File Name")):
+            key = "Uploaded_File_Name" if "Uploaded_File_Name" in fields_cfg else "Uploaded File Name"
+            row[key] = basename(sync_file["source"])
         if "Md5sum" in fields_cfg:
             try:
                 # Only compute if target exists (dry-run may not copy)
