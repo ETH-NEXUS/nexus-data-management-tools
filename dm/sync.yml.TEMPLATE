@@ -38,8 +38,8 @@ date_format: '%Y-%m-%d %H:%M:%S'
 #            If you use a custom table like scRNA_Experiments, ensure 'schema' is your schema
 #            name (without dots) and 'table' is the exact table name.
 labkey:
-  host: intercept-labkey-dev.nexus.ethz.ch
-  container: 'LOOP Intercept'
+  host: ctr-biomed-13.leomed.ethz.ch:8080
+  container: 'LOOP mTORUS'
   context:
   use_ssl: false
   schema: exp.data

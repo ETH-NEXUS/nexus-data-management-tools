@@ -270,6 +270,11 @@ def sync(
                 except Exception as ex:
                     M.warn(f"LabKey lookup failed for {schema}.{table}.{rfield} == '{key_val}': {ex}")
                     continue
+        # Summary
+        total = len(sync_file_list)
+        matched = sum(1 for sf in sync_file_list if sf.get("meta_found"))
+        unmatched = total - matched
+        M.info(f"Metadata match summary: matched {matched}/{total} ({unmatched} unmatched)")
         return [], {}
 
     def derive_and_finalize_targets(sync_file_list: list):
@@ -404,19 +409,40 @@ def sync(
             if isinstance(r, dict):
                 r2 = dict(r)
                 r2.pop("meta_for_write", None)
+                # Indicate if this will update an existing LabKey row or create a new one
+                r2["write_action"] = "update" if r2.get("in_labkey") else "create"
                 display_rows.append(r2)
             else:
                 display_rows.append(r)
         T.out(
             display_rows,
             sort_by="source",
-            column_options={"justify": "left", "vertical": "middle"},
+            # For the metadata matching table only: do not wrap long lines; use ellipsis
+            column_options={"justify": "left", "vertical": "middle", "overflow": "ellipsis", "no_wrap": True},
             row_style=lambda row: (
                 "red"
                 if row.get("integrity_method") == "md5" and (row.get("md5_ok") is False)
                 else ("yellow" if ("meta_found" in row and row.get("meta_found") is False) else None)
             ),
         )
+
+    def summarize_copy_plan(sync_file_list: list, metadata_required: bool):
+        """Print a concise summary of where files would be copied in dry-run mode."""
+        rows = []
+        for sf in sync_file_list:
+            action = "would_copy"
+            reason = ""
+            if metadata_required and not sf.get("meta_found", False):
+                action, reason = "would_skip", "metadata_missing"
+            elif sf.get("integrity_method") == "md5" and (sf.get("md5_ok") is False):
+                action, reason = "would_skip", "md5_mismatch"
+            rows.append({
+                "source": sf.get("source", ""),
+                "target": sf.get("target", ""),
+                "action": action if not reason else f"{action}:{reason}",
+            })
+        M.info("Copy plan summary (dry run):")
+        T.out(rows, sort_by="source", column_options={"justify": "left", "vertical": "middle"})
 
     def perform_copy_and_writeback(sync_file_list: list):
         synced_file_list = []
@@ -513,12 +539,35 @@ def sync(
             ),
         )
 
+        # End-of-run copy summary
+        summary_rows = []
+        for r in synced_file_list:
+            action = "copied" if (r.get("copy_ok") and r.get("verified")) else f"skipped:{r.get('reason','')}"
+            summary_rows.append({
+                "source": r.get("source", ""),
+                "target": r.get("target", ""),
+                "action": action,
+            })
+        M.info("Copy summary (executed):")
+        T.out(summary_rows, sort_by="source", column_options={"justify": "left", "vertical": "middle"})
+        
+        if not do_it:
+            summary_rows = []
+            for r in sync_file_list:
+                action = "would_copy" if (r.get("copy_ok") and r.get("verified")) else f"would_skip:{r.get('reason','')}"
+                summary_rows.append({
+                    "source": r.get("source", ""),
+                    "target": r.get("target", ""),
+                    "action": action,
+                })
+            M.info("Copy summary (dry run):")
+            T.out(summary_rows, sort_by="source", column_options={"justify": "left", "vertical": "middle"})
+        
         if writeback_rows:
             try:
                 api.query.insert_rows(labkey["schema"], labkey["table"], writeback_rows)
                 M.info(f"Inserted {len(writeback_rows)} row(s) into LabKey {labkey['schema']}.{labkey['table']}")
             except Exception as ex:
-                M.error("Labkey insert error:")
                 M.error(ex)
         return
 
@@ -647,5 +696,6 @@ def sync(
             perform_copy_and_writeback(sync_file_list)
     else:
         dry_run_writeback(sync_file_list)
+        summarize_copy_plan(sync_file_list, bool(cfg.get("metadata_required", False)))
 if __name__ == "__main__":
     cli()
