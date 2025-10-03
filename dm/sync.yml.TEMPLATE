@@ -93,7 +93,7 @@ lookups:
 metadata_sources:
   - name: samples
     type: labkey
-    schema: lists
+    schema: samples
     table: 16S_Sequencing_Samples
     columns: [Name, Hospital Secondary Sample Id]
 

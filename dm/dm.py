@@ -166,11 +166,23 @@ def sync(
 
         # Log discovery and selection summary
         M.info(f"Discovered {len(drop_files)} file(s) via drop_filename_filter; matched {len(planned)}, skipped {len(skipped)} by drop_filename_regex.")
-        if skipped:
-            M.info("Showing up to first 20 skipped examples (non-matching regex):")
+        if planned:
             try:
                 T.out(
-                    [{"source": s, "status": "skipped_non_match"} for s in skipped[:20]],
+                    [
+                        {"source": re.sub(r"^/", "", p["source"].replace(drop_folder, "")), "status": "matched"}
+                        for p in planned
+                    ],
+                    sort_by="source",
+                    column_options={"justify": "left", "vertical": "middle"},
+                )
+            except Exception:
+                pass
+        if skipped:
+            M.info("Listing all skipped files (non-matching regex):")
+            try:
+                T.out(
+                    [{"source": s, "status": "skipped_non_match"} for s in skipped],
                     sort_by="source",
                     column_options={"justify": "left", "vertical": "middle"},
                 )

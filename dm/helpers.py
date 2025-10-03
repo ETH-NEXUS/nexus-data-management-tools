@@ -53,6 +53,10 @@ class TableOutput:
         sort_by=None,
         row_style=lambda row: None,
     ):
+        # Merge default wrapping options with any caller-provided options
+        default_col_opts = {"overflow": "fold", "no_wrap": False}
+        col_opts = {**default_col_opts, **(column_options or {})}
+
         table = Table(
             show_header=(
                 headers is not None
@@ -60,13 +64,14 @@ class TableOutput:
             ),
             show_lines=show_lines,
             show_edge=False,
+            expand=True,  # allow table to use full console width so folding can wrap lines
         )
         if headers:
             for header in headers:
-                table.add_column(header, **column_options)
+                table.add_column(header, **col_opts)
         elif isinstance(data, list) and isinstance(data[0], dict):
             for header in data[0].keys():
-                table.add_column(header, **column_options)
+                table.add_column(header, **col_opts)
 
         if isinstance(data, str):
             data = data.split("\n")
