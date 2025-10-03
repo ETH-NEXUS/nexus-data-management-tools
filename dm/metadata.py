@@ -34,8 +34,13 @@ def _resolve_path(drop_folder: str, path: str) -> str:
     return path if isabs(path) else join(drop_folder, path)
 
 
-def _load_labkey_rows(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    api = APIWrapper(cfg["host"], cfg["container"], use_ssl=True)
+def _load_labkey_rows(cfg: Dict[str, Any], global_labkey: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Load rows from LabKey using the top-level LabKey connection.
+
+    cfg contains schema/table/columns/filters.
+    global_labkey must provide host/container (context optional).
+    """
+    api = APIWrapper(global_labkey["host"], global_labkey["container"], use_ssl=True)
     filters = []
     for f in cfg.get("filters", []) or []:
         ftype = (f.get("type") or "").lower()
@@ -80,7 +85,11 @@ def _load_csv_rows(path: str, delimiter: str = ",", encoding: str = "utf-8") -> 
     return rows
 
 
-def load_metadata_sources(sources_cfg: List[Dict[str, Any]], drop_folder: str) -> List[Dict[str, Any]]:
+def load_metadata_sources(
+    sources_cfg: List[Dict[str, Any]],
+    drop_folder: str,
+    global_labkey: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """Load metadata rows for each configured source.
 
     sources_cfg: list of sources, each with a 'type' and type-specific fields.
@@ -96,7 +105,9 @@ def load_metadata_sources(sources_cfg: List[Dict[str, Any]], drop_folder: str) -
         rows: List[Dict[str, Any]] = []
         try:
             if stype == "labkey":
-                rows = _load_labkey_rows(src)
+                if not global_labkey:
+                    raise RuntimeError("Top-level LabKey configuration is required for labkey metadata sources.")
+                rows = _load_labkey_rows(src, global_labkey)
             elif stype == "excel":
                 path = _resolve_path(drop_folder, src["path"])
                 rows = _load_excel_rows(path, sheet=src.get("sheet"))

@@ -171,7 +171,7 @@ def sync(
         for src in (metadata_sources_cfg or []):
             if (src or {}).get("type") == "labkey":
                 _lk_check(src.get("schema", ""), src.get("table", ""), f"metadata source '{src.get('name','')}'")
-        sources_result = load_metadata_sources(metadata_sources_cfg, drop_folder)
+        sources_result = load_metadata_sources(metadata_sources_cfg, drop_folder, labkey)
         summary = [{"name": r.get("name"), "type": r.get("type"), "count": r.get("count"), "status": r.get("status")} for r in sources_result]
         if summary:
             T.out(summary, sort_by="name", column_options={"justify": "left", "vertical": "middle"})

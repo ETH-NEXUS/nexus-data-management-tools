@@ -1,6 +1,6 @@
 # we assume this config is placed directly in /cluster/work/mtorus/data-drop
-drop_filename_regex: ".*/(?P<main_folder>[^/]+)/(?P<phase>[^/]+)/.*/(?P<uploaded>\d{6}_\d{3}-(?P<hosp_sec>(?P<hosp_pri>[A-Z0-9]+_U)_[a-z0-9]+-\d)_S\d+_R\d_\d+\.fastq\.gz)"
-drop_filename_filter: "**/*.fastq.gz"
+drop_filename_regex: '.*/(?P<main_folder>[^/]+)/(?P<phase>[^/]+)/.*/(?P<uploaded>\d{6}_\d{3}-(?P<hosp_sec>(?P<hosp_pri>[A-Z0-9]+_U)_[a-z0-9]+-\d)_S\d+_R\d_\d+\.fastq\.gz)'
+drop_filename_filter: '**/*.fastq.gz'
  # Note: The regex is applied to the source path after removing the drop folder path
  #       You can use named groups like <uploaded>, <hosp_sec>, etc. The tool also derives
  #       <hosp_sec_dot> = <hosp_sec> with '-' replaced by '.' for matching LabKey rows.
@@ -39,7 +39,7 @@ date_format: '%Y-%m-%d %H:%M:%S'
 #            name (without dots) and 'table' is the exact table name.
 labkey:
   host: intercept-labkey-dev.nexus.ethz.ch
-  container: "LOOP Intercept"
+  container: 'LOOP Intercept'
   context: 
   schema: exp
   table: 16S_Experiments
@@ -86,14 +86,12 @@ lookups:
 
 # Optional: External metadata sources to load before syncing.
 # Supported types: labkey, excel, csv
-# - labkey: requires host, container, schema, table; optional columns, filters
+# - labkey: requires schema and table; optional columns, filters. Uses top-level labkey.host/container
 # - excel: requires path; optional sheet
 # - csv  : requires path; optional delimiter
 metadata_sources:
   - name: samples
     type: labkey
-    host: intercept-labkey-dev.nexus.ethz.ch
-    container: "LOOP Intercept"
     schema: lists
     table: 16S_Sequencing_Samples
     columns: [Name, Hospital Secondary Sample Id]
@@ -122,10 +120,10 @@ metadata_required: true
 metadata_derive:
   - source: samples
     field: Name
-    regex: "^(?P<patient_id>MTR-[A-Z]-\d{3})_(?P<visit>V\d{2})-(?P<sample_id>[A-Z]{2}-\d{2}-\d{2})-(?P<technology>[A-Z]*)$"
+    regex: '^(?P<patient_id>MTR-[A-Z]-\d{3})_(?P<visit>V\d{2})-(?P<sample_id>[A-Z]{2}-\d{2}-\d{2})-(?P<technology>[A-Z]*)$'
   - source: samples
     field: Hospital Secondary Sample Id
-    regex: "^(?P<hosp_secondary_id>.+)$"
+    regex: '^(?P<hosp_secondary_id>.+)$'
 
 # Optional: Character/string replacements
 # - before_match: applied to captured/derived variables prior to metadata matching and templating
@@ -139,11 +137,11 @@ replacements:
   before_match:
     - target: var
       name: hosp_sec
-      replace: "-"
-      with: "."
+      replace: '-'
+      with: '.'
   before_writeback:
     # Example: normalize Primary_Sample_Id hyphens to underscores
     - target: field
       name: Primary_Sample_Id
-      replace: "-"
-      with: "_"
+      replace: '-'
+      with: '_'
