@@ -392,11 +392,54 @@ def sync(
 
     def check_labkey_presence(sync_file_list: list):
         M.info("Collecting information from labkey...")
+        presence_cfg = cfg.get("presence_check") or {}
+        match_field_cfg = presence_cfg.get("field")  # e.g., "Name" or "file_list"
+        match_mode = (presence_cfg.get("match") or "contains").lower()  # "equal" or "contains"
+
+        # Helper to resolve field caption->name for the write-back table
+        _wb_cols_cache = None
+        def _resolve_wb_field(field: str) -> str:
+            nonlocal _wb_cols_cache
+            if not field:
+                return field
+            if _wb_cols_cache is None:
+                try:
+                    meta = api.query.get_query(labkey["schema"], labkey["table"]) or {}
+                    _wb_cols_cache = meta.get("columns", [])
+                except Exception:
+                    _wb_cols_cache = []
+            def _norm(s: str) -> str:
+                return "" if s is None else re.sub(r"[^A-Za-z0-9]", "", str(s)).lower()
+            want = _norm(field)
+            for c in _wb_cols_cache or []:
+                nm, cp = c.get("name"), c.get("caption")
+                if (_norm(nm) == want) or (_norm(cp) == want):
+                    return nm or field
+            return field
+
         for sf in sync_file_list:
             try:
-                filters = [QueryFilter(file_list_field, sf["target"], QueryFilter.Types.CONTAINS)]
+                # Local presence check: does the target file already exist?
+                sf["target_exists"] = isfile(sf.get("target", ""))
+                # Default: use file_list field with CONTAINS on planned target path
+                if not match_field_cfg or str(match_field_cfg).lower() == "file_list":
+                    filters = [QueryFilter(file_list_field, sf["target"], QueryFilter.Types.CONTAINS)]
+                else:
+                    # Render the chosen field's value from fields config
+                    if not isinstance(fields, dict) or match_field_cfg not in fields:
+                        M.warn(f"presence_check.field '{match_field_cfg}' not found in fields; falling back to file_list")
+                        filters = [QueryFilter(file_list_field, sf["target"], QueryFilter.Types.CONTAINS)]
+                    else:
+                        field_template = fields.get(match_field_cfg)
+                        rendered_val = _render_value(sf, dict(sf.get("tmpl_vars") or {}), str(field_template))
+                        rfield = _resolve_wb_field(match_field_cfg)
+                        if match_mode == "equal":
+                            filters = [QueryFilter(rfield, rendered_val, QueryFilter.Types.EQUAL)]
+                        else:
+                            filters = [QueryFilter(rfield, rendered_val, QueryFilter.Types.CONTAINS)]
+
                 results = api.query.select_rows(labkey["schema"], labkey["table"], filter_array=filters)
-                sf["in_labkey"] = len(results["rows"]) > 0
+                sf["in_labkey"] = len(results.get("rows", [])) > 0
             except RequestError as ex:
                 M.error("Labkey request error:")
                 M.error(ex)
@@ -437,6 +480,7 @@ def sync(
             rows.append({
                 "source": sf.get("source", ""),
                 "target": sf.get("target", ""),
+                "target_exists": bool(sf.get("target_exists", False)),
                 "action": action if not reason else f"{action}:{reason}",
             })
         M.info("Copy plan summary (dry run):")
@@ -448,6 +492,7 @@ def sync(
         for sync_file in sync_file_list:
             # Copy source to target
             copy_ok = False
+            target_exists_before = isfile(sync_file.get("target", ""))
             # Policy: require metadata match before copying
             if metadata_required and not sync_file.get("meta_found", False):
                 M.warn(f"Skipping {sync_file['source']} due to missing metadata (metadata_required).")
@@ -459,6 +504,7 @@ def sync(
                     "reason": "metadata_missing",
                     "sidecar": "",
                     "sidecar_copy_ok": False,
+                    "target_exists_before": target_exists_before,
                 })
                 continue
             # Pre-copy integrity enforcement
@@ -478,6 +524,7 @@ def sync(
                             "reason": "md5_mismatch",
                             "sidecar": "md5",
                             "sidecar_copy_ok": False,
+                            "target_exists_before": target_exists_before,
                         }
                     )
                     continue
@@ -508,6 +555,7 @@ def sync(
                 "reason": "",
                 "sidecar": sidecar,
                 "sidecar_copy_ok": sidecar_copy_ok,
+                "target_exists_before": target_exists_before,
             })
             # Prepare LabKey row for write-back when verified
             if verified and fields and isinstance(fields, dict):
@@ -544,22 +592,11 @@ def sync(
             summary_rows.append({
                 "source": r.get("source", ""),
                 "target": r.get("target", ""),
+                "target_exists_before": bool(r.get("target_exists_before", False)),
                 "action": action,
             })
         M.info("Copy summary (executed):")
         T.out(summary_rows, sort_by="source", column_options={"justify": "left", "vertical": "middle"})
-        
-        if not do_it:
-            summary_rows = []
-            for r in sync_file_list:
-                action = "would_copy" if (r.get("copy_ok") and r.get("verified")) else f"would_skip:{r.get('reason','')}"
-                summary_rows.append({
-                    "source": r.get("source", ""),
-                    "target": r.get("target", ""),
-                    "action": action,
-                })
-            M.info("Copy summary (dry run):")
-            T.out(summary_rows, sort_by="source", column_options={"justify": "left", "vertical": "middle"})
         
         if writeback_rows:
             try:

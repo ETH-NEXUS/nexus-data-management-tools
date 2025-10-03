@@ -128,6 +128,10 @@ metadata_derive:
     field: Name
     regex: '^(?P<sample_name_prefix>MTR-[A-Z]-\d{3}_V\d{2}-[A-Z]{2})'
 
+presence_check:
+  field: Name        # or "file_list" to keep default behavior
+  match: equal       # equal | contains
+
 # Optional: Character/string replacements
 # - before_match: applied to captured/derived variables prior to metadata matching and templating
 # - before_writeback: applied either to variables (target: var) before rendering or to final fields (target: field)
