@@ -409,13 +409,31 @@ def sync(
             if isinstance(r, dict):
                 r2 = dict(r)
                 r2.pop("meta_for_write", None)
+                r2.pop("meta_rows", None)
+                r2.pop("meta_row", None)
                 # Indicate if this will update an existing LabKey row or create a new one
                 r2["write_action"] = "update" if r2.get("in_labkey") else "create"
                 display_rows.append(r2)
             else:
                 display_rows.append(r)
+        # Stable headers to avoid misaligned dict value order
+        headers = (
+            "source",
+            "target",
+            "meta_found",
+            "meta_source",
+            "meta_key",
+            "write_action",
+            "tmpl_vars",
+            "integrity_method",
+            "md5",
+            "orig_md5",
+            "md5_ok",
+            "in_labkey",
+        )
         T.out(
             display_rows,
+            headers=headers,
             sort_by="source",
             # For the metadata matching table only: do not wrap long lines; use ellipsis
             column_options={"justify": "left", "vertical": "middle", "overflow": "ellipsis", "no_wrap": True},

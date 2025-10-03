@@ -64,9 +64,8 @@ fields:
   Path To Synced Data: 
   Uploaded File Name: <uploaded>
   Technology_Sample_Id: <samples.Name>
-  # Primary_Sample_Id is derived from Name as <patient_id>_<visit>-<sample_type>
   Primary_Sample_Id: <sample_name_prefix>
-  Hospital Primary Sample Id: ""
+  Hospital Primary Sample Id: <hosp_pri>
   Hospital Secondary Sample Id: <hosp_secondary_id>
   Md5sum: ""
 
