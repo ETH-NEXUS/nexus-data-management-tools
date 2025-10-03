@@ -40,7 +40,12 @@ def _load_labkey_rows(cfg: Dict[str, Any], global_labkey: Dict[str, Any]) -> Lis
     cfg contains schema/table/columns/filters.
     global_labkey must provide host/container (context optional).
     """
-    api = APIWrapper(global_labkey["host"], global_labkey["container"], use_ssl=True)
+    api = APIWrapper(
+        global_labkey["host"],
+        global_labkey["container"],
+        context_path=global_labkey.get("context") or None,
+        use_ssl=bool(global_labkey.get("use_ssl", True)),
+    )
     filters = []
     for f in cfg.get("filters", []) or []:
         ftype = (f.get("type") or "").lower()

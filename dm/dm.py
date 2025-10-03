@@ -94,8 +94,10 @@ def sync(
         M.error("Please define 'processed_folder'.")
         return
 
+    use_ssl = bool(labkey.get("use_ssl", True))
+    context_path = labkey.get("context") or None
     try:
-        api = APIWrapper(labkey["host"], labkey["container"], use_ssl=True)
+        api = APIWrapper(labkey["host"], labkey["container"], context_path=context_path, use_ssl=use_ssl)
     except (ServerContextError, ServerNotFoundError, QueryNotFoundError) as ex:
         M.error("Labkey connection error:")
         M.error(ex)

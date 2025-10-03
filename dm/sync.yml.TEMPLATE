@@ -40,7 +40,8 @@ date_format: '%Y-%m-%d %H:%M:%S'
 labkey:
   host: intercept-labkey-dev.nexus.ethz.ch
   container: 'LOOP Intercept'
-  context: 
+  context:
+  use_ssl: false
   schema: exp
   table: 16S_Experiments
 
