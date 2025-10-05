@@ -228,6 +228,27 @@ def sync(
                     return nm or field
             return field
 
+        # Helper to extract a field value from a row using preferred keys with fallbacks
+        def _get_row_value(row: dict, preferred_keys: list[str]):
+            for key in preferred_keys:
+                if key in row and row.get(key) is not None:
+                    return row.get(key)
+            # normalized match
+            def _norm(s: str) -> str:
+                return "" if s is None else re.sub(r"[^A-Za-z0-9]", "", str(s)).lower()
+            for key in preferred_keys:
+                nk = _norm(key)
+                for rk in row.keys():
+                    if _norm(rk) == nk and row.get(rk) is not None:
+                        return row.get(rk)
+            # suffix match as last resort
+            for key in preferred_keys:
+                nk = _norm(key)
+                for rk in row.keys():
+                    if _norm(rk).endswith(nk) and row.get(rk) is not None:
+                        return row.get(rk)
+            return None
+
         # Perform direct lookups
         default_key_tmpl = metadata_match_cfg.get("key_template")
         rules = metadata_match_cfg.get("search") or []
@@ -258,8 +279,32 @@ def sync(
                     flt = [QueryFilter(rfield, key_val, QueryFilter.Types.EQUAL)]
                     result = api.query.select_rows(schema, table, filter_array=flt)
                     rows = result.get("rows", [])
-                    if rows:
-                        row = rows[0]
+                    # Strict client-side equality on intended field to avoid wrong matches
+                    candidates = []
+                    for row in rows or []:
+                        v = _get_row_value(row, [rfield, field])
+                        if v is not None and str(v).strip() == key_val:
+                            candidates.append(row)
+                    if len(candidates) > 1:
+                        # Ambiguous result: fail fast with context
+                        M.error(
+                            f"Ambiguous metadata match: source='{src_name}', field='{field}', key='{key_val}'. {len(candidates)} rows matched."
+                        )
+                        try:
+                            rows_sum = []
+                            for r in candidates:
+                                val = _get_row_value(r, [rfield, field])
+                                rows_sum.append({
+                                    "RowId": r.get("RowId") or r.get("rowid") or r.get("id"),
+                                    "Name": r.get("Name") or r.get("name"),
+                                    "value": str(val),
+                                })
+                            T.out(rows_sum, column_options={"justify": "left", "vertical": "middle"})
+                        except Exception:
+                            pass
+                        exit(2)
+                    if candidates:
+                        row = candidates[0]
                         meta_rows = sf.setdefault("meta_rows", {})
                         if src_name not in meta_rows:
                             meta_rows[src_name] = row
