@@ -424,17 +424,13 @@ def sync(
                 # Default: use file_list field with CONTAINS on planned target path
                 if not match_field_cfg or str(match_field_cfg).lower() == "file_list":
                     filters = [QueryFilter(file_list_field, sf["target"], QueryFilter.Types.CONTAINS)]
-                    try:
-                        M.debug(
-                            f"Presence check in {labkey['schema']}.{labkey['table']}: {file_list_field} CONTAINS '{sf['target']}'"
-                        )
-                    except Exception:
-                        pass
+                    sf["presence_field"], sf["presence_value"] = file_list_field, sf.get("target", "")
                 else:
                     # Render the chosen field's value from fields config
                     if not isinstance(fields, dict) or match_field_cfg not in fields:
                         M.warn(f"presence_check.field '{match_field_cfg}' not found in fields; falling back to file_list")
                         filters = [QueryFilter(file_list_field, sf["target"], QueryFilter.Types.CONTAINS)]
+                        sf["presence_field"], sf["presence_value"] = file_list_field, sf.get("target", "")
                     else:
                         field_template = fields.get(match_field_cfg)
                         rendered_val = _render_value(sf, dict(sf.get("tmpl_vars") or {}), str(field_template))
@@ -443,21 +439,13 @@ def sync(
                             filters = [QueryFilter(rfield, rendered_val, QueryFilter.Types.EQUAL)]
                         else:
                             filters = [QueryFilter(rfield, rendered_val, QueryFilter.Types.CONTAINS)]
-                        try:
-                            op = "==" if match_mode == "equal" else "CONTAINS"
-                            M.debug(
-                                f"Presence check in {labkey['schema']}.{labkey['table']}: {rfield} {op} '{rendered_val}' (from fields['{match_field_cfg}'])"
-                            )
-                        except Exception:
-                            pass
+                        sf["presence_field"], sf["presence_value"] = rfield, rendered_val
 
                 results = api.query.select_rows(labkey["schema"], labkey["table"], filter_array=filters)
-                count = len(results.get("rows", []))
-                sf["in_labkey"] = count > 0
-                try:
-                    M.debug(f"Presence check rows returned: {count}")
-                except Exception:
-                    pass
+                rows = results.get("rows", [])
+                sf["in_labkey"] = len(rows) > 0
+                if sf["in_labkey"]:
+                    sf["existing_row"] = rows[0]
             except RequestError as ex:
                 M.error("Labkey request error:")
                 M.error(ex)
@@ -470,6 +458,11 @@ def sync(
             if isinstance(r, dict):
                 r2 = dict(r)
                 r2.pop("meta_for_write", None)
+                r2.pop("existing_row", None)
+                r2.pop("meta_rows", None)
+                r2.pop("meta_row", None)
+                r2.pop("presence_field", None)
+                r2.pop("presence_value", None)
                 # Indicate if this will update an existing LabKey row or create a new one
                 r2["write_action"] = "update" if r2.get("in_labkey") else "create"
                 display_rows.append(r2)
@@ -507,6 +500,27 @@ def sync(
     def perform_copy_and_writeback(sync_file_list: list):
         synced_file_list = []
         writeback_rows = []
+        update_diff_rows = []
+        # Helper to resolve write-back field name and read existing values
+        _wb_cols_cache = None
+        def _resolve_wb_field_for_updates(field: str) -> str:
+            nonlocal _wb_cols_cache
+            if not field:
+                return field
+            if _wb_cols_cache is None:
+                try:
+                    meta = api.query.get_query(labkey["schema"], labkey["table"]) or {}
+                    _wb_cols_cache = meta.get("columns", [])
+                except Exception:
+                    _wb_cols_cache = []
+            def _norm(s: str) -> str:
+                return "" if s is None else re.sub(r"[^A-Za-z0-9]", "", str(s)).lower()
+            want = _norm(field)
+            for c in _wb_cols_cache or []:
+                nm, cp = c.get("name"), c.get("caption")
+                if (_norm(nm) == want) or (_norm(cp) == want):
+                    return nm or field
+            return field
         for sync_file in sync_file_list:
             # Copy source to target
             copy_ok = False
@@ -580,7 +594,25 @@ def sync(
                 # Load replacements config for write-back
                 _repl_cfg = (cfg.get("replacements") or {})
                 before_wb_repls = _repl_cfg.get("before_writeback") or []
-                writeback_rows.append(_build_row(sync_file, fields, before_wb_repls))
+                planned_row = _build_row(sync_file, fields, before_wb_repls)
+                writeback_rows.append(planned_row)
+                # If presence indicates existing row, log what would change
+                if sync_file.get("in_labkey") and isinstance(sync_file.get("existing_row"), dict):
+                    existing = sync_file.get("existing_row") or {}
+                    key_field = sync_file.get("presence_field") or ""
+                    key_value = sync_file.get("presence_value") or ""
+                    for k in (fields or {}).keys():
+                        rfield = _resolve_wb_field_for_updates(k)
+                        old_val = existing.get(rfield)
+                        new_val = planned_row.get(k)
+                        if str(old_val) != str(new_val):
+                            update_diff_rows.append({
+                                "row_key_field": key_field,
+                                "row_key_value": key_value,
+                                "field": k,
+                                "from": str(old_val),
+                                "to": str(new_val),
+                            })
 
         T.out(
             synced_file_list,
@@ -615,6 +647,10 @@ def sync(
             })
         M.info("Copy summary (executed):")
         T.out(summary_rows, sort_by="source", column_options={"justify": "left", "vertical": "middle"})
+        # Log planned update changes (executed mode)
+        if update_diff_rows:
+            M.info("Planned update changes (executed run):")
+            T.out(update_diff_rows, column_options={"justify": "left", "vertical": "middle"})
         
         if writeback_rows:
             try:
@@ -630,13 +666,54 @@ def sync(
         writeback_rows = []
         _repl_cfg = (cfg.get("replacements") or {})
         before_wb_repls = _repl_cfg.get("before_writeback") or []
+        # Helpers for diffing
+        _wb_cols_cache = None
+        def _resolve_wb_field_for_updates(field: str) -> str:
+            nonlocal _wb_cols_cache
+            if not field:
+                return field
+            if _wb_cols_cache is None:
+                try:
+                    meta = api.query.get_query(labkey["schema"], labkey["table"]) or {}
+                    _wb_cols_cache = meta.get("columns", [])
+                except Exception:
+                    _wb_cols_cache = []
+            def _norm(s: str) -> str:
+                return "" if s is None else re.sub(r"[^A-Za-z0-9]", "", str(s)).lower()
+            want = _norm(field)
+            for c in _wb_cols_cache or []:
+                nm, cp = c.get("name"), c.get("caption")
+                if (_norm(nm) == want) or (_norm(cp) == want):
+                    return nm or field
+            return field
+        update_diff_rows = []
         for sf in sync_file_list:
-            writeback_rows.append(_build_row(sf, fields, before_wb_repls))
+            planned_row = _build_row(sf, fields, before_wb_repls)
+            writeback_rows.append(planned_row)
+            if sf.get("in_labkey") and isinstance(sf.get("existing_row"), dict):
+                existing = sf.get("existing_row") or {}
+                key_field = sf.get("presence_field") or ""
+                key_value = sf.get("presence_value") or ""
+                for k in (fields or {}).keys():
+                    rfield = _resolve_wb_field_for_updates(k)
+                    old_val = existing.get(rfield)
+                    new_val = planned_row.get(k)
+                    if str(old_val) != str(new_val):
+                        update_diff_rows.append({
+                            "row_key_field": key_field,
+                            "row_key_value": key_value,
+                            "field": k,
+                            "from": str(old_val),
+                            "to": str(new_val),
+                        })
         try:
             M.info("Planned LabKey rows (dry run):")
             print(json.dumps(writeback_rows, indent=2))
         except Exception:
             pass
+        if update_diff_rows:
+            M.info("Planned update changes (dry run):")
+            T.out(update_diff_rows, column_options={"justify": "left", "vertical": "middle"})
         return
 
     # --- Helpers to render fields and build LabKey rows ---
