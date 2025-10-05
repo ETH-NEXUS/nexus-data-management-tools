@@ -424,6 +424,12 @@ def sync(
                 # Default: use file_list field with CONTAINS on planned target path
                 if not match_field_cfg or str(match_field_cfg).lower() == "file_list":
                     filters = [QueryFilter(file_list_field, sf["target"], QueryFilter.Types.CONTAINS)]
+                    try:
+                        M.debug(
+                            f"Presence check in {labkey['schema']}.{labkey['table']}: {file_list_field} CONTAINS '{sf['target']}'"
+                        )
+                    except Exception:
+                        pass
                 else:
                     # Render the chosen field's value from fields config
                     if not isinstance(fields, dict) or match_field_cfg not in fields:
@@ -437,9 +443,21 @@ def sync(
                             filters = [QueryFilter(rfield, rendered_val, QueryFilter.Types.EQUAL)]
                         else:
                             filters = [QueryFilter(rfield, rendered_val, QueryFilter.Types.CONTAINS)]
+                        try:
+                            op = "==" if match_mode == "equal" else "CONTAINS"
+                            M.debug(
+                                f"Presence check in {labkey['schema']}.{labkey['table']}: {rfield} {op} '{rendered_val}' (from fields['{match_field_cfg}'])"
+                            )
+                        except Exception:
+                            pass
 
                 results = api.query.select_rows(labkey["schema"], labkey["table"], filter_array=filters)
-                sf["in_labkey"] = len(results.get("rows", [])) > 0
+                count = len(results.get("rows", []))
+                sf["in_labkey"] = count > 0
+                try:
+                    M.debug(f"Presence check rows returned: {count}")
+                except Exception:
+                    pass
             except RequestError as ex:
                 M.error("Labkey request error:")
                 M.error(ex)
