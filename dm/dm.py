@@ -531,8 +531,12 @@ def sync(
             sort_by="source",
             row_style=lambda row: (
                 "red"
-                if row.get("integrity_method") == "md5" and (row.get("md5_ok") is False)
-                else ("yellow" if ("meta_found" in row and row.get("meta_found") is False) else None)
+                if (row.get("meta_found") is False)
+                else (
+                    "red"
+                    if row.get("integrity_method") == "md5" and (row.get("md5_ok") is False)
+                    else None
+                )
             ),
         )
 
@@ -542,7 +546,7 @@ def sync(
         for sf in sync_file_list:
             action = "would_copy"
             reason = ""
-            if metadata_required and not sf.get("meta_found", False):
+            if not sf.get("meta_found", False):
                 action, reason = "would_skip", "metadata_missing"
             elif sf.get("integrity_method") == "md5" and (sf.get("md5_ok") is False):
                 action, reason = "would_skip", "md5_mismatch"
@@ -584,8 +588,8 @@ def sync(
             # Copy source to target
             copy_ok = False
             target_exists_before = isfile(sync_file.get("target", ""))
-            # Policy: require metadata match before copying
-            if metadata_required and not sync_file.get("meta_found", False):
+            # Always require metadata match before copying
+            if not sync_file.get("meta_found", False):
                 M.warn(f"Skipping {sync_file['source']} due to missing metadata (metadata_required).")
                 synced_file_list.append({
                     "source": sync_file["source"],
@@ -656,7 +660,7 @@ def sync(
                 planned_row = _build_row(sync_file, fields, before_wb_repls)
                 writeback_rows.append(planned_row)
                 # If presence indicates existing row, log what would change
-                if sync_file.get("in_labkey") and isinstance(sync_file.get("existing_row"), dict):
+                if sync_file.get("meta_found") and sync_file.get("in_labkey") and isinstance(sync_file.get("existing_row"), dict):
                     existing = sync_file.get("existing_row") or {}
                     key_field = sync_file.get("presence_field") or ""
                     key_value = sync_file.get("presence_value") or ""
@@ -664,15 +668,16 @@ def sync(
                         rfield = _resolve_wb_field_for_updates(k)
                         old_val = existing.get(rfield)
                         new_val = planned_row.get(k)
-                        if str(old_val) != str(new_val):
-                            update_diff_rows.append({
-                                "row_key_field": key_field,
-                                "row_key_value": key_value,
-                                "field": k,
-                                "from": str(old_val),
-                                "to": str(new_val),
-                            })
-                elif not sync_file.get("in_labkey"):
+                        changed = str(old_val) != str(new_val)
+                        update_diff_rows.append({
+                            "row_key_field": key_field,
+                            "row_key_value": key_value,
+                            "field": k,
+                            "from": str(old_val),
+                            "to": str(new_val),
+                            "will_change": "yes" if changed else "no",
+                        })
+                elif sync_file.get("meta_found") and not sync_file.get("in_labkey"):
                     # Collect create fields per planned key
                     key_field = sync_file.get("presence_field") or ""
                     key_value = sync_file.get("presence_value") or ""
@@ -727,7 +732,12 @@ def sync(
                 })
             for (kf, kv), rows in groups.items():
                 M.info(f"Planned update changes (executed run) for {kf} == '{kv}':")
-                T.out(rows, column_options={"justify": "left", "vertical": "middle"})
+                T.out(
+                    rows,
+                    sort_by="field",
+                    column_options={"justify": "left", "vertical": "middle"},
+                    row_style=lambda r: ("yellow" if (isinstance(r, dict) and str(r.get("will_change", "")).lower() in ("yes", "true", "1")) else None),
+                )
 
         # Log planned create fields (executed mode), one table per new row
         if create_field_groups:
@@ -774,7 +784,7 @@ def sync(
         for sf in sync_file_list:
             planned_row = _build_row(sf, fields, before_wb_repls)
             writeback_rows.append(planned_row)
-            if sf.get("in_labkey") and isinstance(sf.get("existing_row"), dict):
+            if sf.get("meta_found") and sf.get("in_labkey") and isinstance(sf.get("existing_row"), dict):
                 existing = sf.get("existing_row") or {}
                 key_field = sf.get("presence_field") or ""
                 key_value = sf.get("presence_value") or ""
@@ -782,15 +792,16 @@ def sync(
                     rfield = _resolve_wb_field_for_updates(k)
                     old_val = existing.get(rfield)
                     new_val = planned_row.get(k)
-                    if str(old_val) != str(new_val):
-                        update_diff_rows.append({
-                            "row_key_field": key_field,
-                            "row_key_value": key_value,
-                            "field": k,
-                            "from": str(old_val),
-                            "to": str(new_val),
-                        })
-            else:
+                    changed = str(old_val) != str(new_val)
+                    update_diff_rows.append({
+                        "row_key_field": key_field,
+                        "row_key_value": key_value,
+                        "field": k,
+                        "from": str(old_val),
+                        "to": str(new_val),
+                        "will_change": "yes" if changed else "no",
+                    })
+            elif sf.get("meta_found"):
                 # Will be created: show planned fields per row key
                 key_field = sf.get("presence_field") or ""
                 key_value = sf.get("presence_value") or ""
@@ -811,7 +822,12 @@ def sync(
                 })
             for (kf, kv), rows in groups.items():
                 M.info(f"Planned update changes (dry run) for {kf} == '{kv}':")
-                T.out(rows, column_options={"justify": "left", "vertical": "middle"})
+                T.out(
+                    rows,
+                    sort_by="field",
+                    column_options={"justify": "left", "vertical": "middle"},
+                    row_style=lambda r: ("yellow" if (isinstance(r, dict) and str(r.get("will_change", "")).lower() in ("yes", "true", "1")) else None),
+                )
         if create_field_groups:
             for (kf, kv), rows in create_field_groups.items():
                 M.info(f"Planned create fields (dry run) for {kf} == '{kv}':")
