@@ -557,7 +557,16 @@ def sync(
                 "action": action if not reason else f"{action}:{reason}",
             })
         M.info("Copy plan summary (dry run):")
-        T.out(rows, sort_by="source", column_options={"justify": "left", "vertical": "middle"})
+        T.out(
+            rows,
+            sort_by="source",
+            column_options={"justify": "left", "vertical": "middle"},
+            row_style=lambda r: (
+                "red"
+                if (isinstance(r, dict) and str(r.get("action", "")).startswith("would_skip"))
+                else None
+            ),
+        )
 
     def perform_copy_and_writeback(sync_file_list: list):
         synced_file_list = []
@@ -691,8 +700,8 @@ def sync(
             sort_by="source",
             column_options={"justify": "left", "vertical": "middle"},
             row_style=lambda row: (
-                "yellow"
-                if not row.get("copy_ok")
+                "red"
+                if (not row.get("copy_ok"))
                 else (
                     "red"
                     if (
@@ -718,9 +727,20 @@ def sync(
                 "action": action,
             })
         M.info("Copy summary (executed):")
-        T.out(summary_rows, sort_by="source", column_options={"justify": "left", "vertical": "middle"})
+        T.out(
+            summary_rows,
+            sort_by="source",
+            column_options={"justify": "left", "vertical": "middle"},
+            row_style=lambda r: (
+                "red" if (isinstance(r, dict) and str(r.get("action", "")).startswith("skipped")) else None
+            ),
+        )
         # Log planned update changes (executed mode), one table per matched row
         if update_diff_rows:
+            try:
+                T.console.rule("Planned update changes (executed run)")
+            except Exception:
+                pass
             # Group by (row_key_field, row_key_value)
             groups: dict[tuple[str, str], list] = {}
             for d in update_diff_rows:
@@ -729,6 +749,7 @@ def sync(
                     "field": d.get("field", ""),
                     "from": d.get("from", ""),
                     "to": d.get("to", ""),
+                    "will_change": d.get("will_change", ""),
                 })
             for (kf, kv), rows in groups.items():
                 M.info(f"Planned update changes (executed run) for {kf} == '{kv}':")
@@ -741,6 +762,10 @@ def sync(
 
         # Log planned create fields (executed mode), one table per new row
         if create_field_groups:
+            try:
+                T.console.rule("Planned create fields (executed run)")
+            except Exception:
+                pass
             for (kf, kv), rows in create_field_groups.items():
                 M.info(f"Planned create fields (executed run) for {kf} == '{kv}':")
                 T.out(rows, column_options={"justify": "left", "vertical": "middle"})
@@ -819,6 +844,7 @@ def sync(
                     "field": d.get("field", ""),
                     "from": d.get("from", ""),
                     "to": d.get("to", ""),
+                    "will_change": d.get("will_change", ""),
                 })
             for (kf, kv), rows in groups.items():
                 M.info(f"Planned update changes (dry run) for {kf} == '{kv}':")
@@ -829,6 +855,10 @@ def sync(
                     row_style=lambda r: ("yellow" if (isinstance(r, dict) and str(r.get("will_change", "")).lower() in ("yes", "true", "1")) else None),
                 )
         if create_field_groups:
+            try:
+                T.console.rule("Planned create fields (dry run)")
+            except Exception:
+                pass
             for (kf, kv), rows in create_field_groups.items():
                 M.info(f"Planned create fields (dry run) for {kf} == '{kv}':")
                 T.out(rows, column_options={"justify": "left", "vertical": "middle"})
