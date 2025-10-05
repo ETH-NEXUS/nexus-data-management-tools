@@ -458,6 +458,19 @@ def sync(
             if isinstance(r, dict):
                 r2 = dict(r)
                 r2.pop("meta_for_write", None)
+                # Compute JSON view of matched meta row for display
+                try:
+                    _meta_obj = r.get("meta_row")
+                    if not _meta_obj:
+                        _mrs = r.get("meta_rows") or {}
+                        if _mrs:
+                            # Prefer primary source if available
+                            _src = r.get("meta_source")
+                            _meta_obj = _mrs.get(_src) if _src in _mrs else next(iter(_mrs.values()), None)
+                    r2["meta_row_json"] = json.dumps(_meta_obj, ensure_ascii=False) if _meta_obj else ""
+                except Exception:
+                    r2["meta_row_json"] = ""
+                # Hide heavy internals
                 r2.pop("existing_row", None)
                 r2.pop("meta_rows", None)
                 r2.pop("meta_row", None)
@@ -501,6 +514,7 @@ def sync(
         synced_file_list = []
         writeback_rows = []
         update_diff_rows = []
+        create_field_groups: dict[tuple[str, str], list] = {}
         # Helper to resolve write-back field name and read existing values
         _wb_cols_cache = None
         def _resolve_wb_field_for_updates(field: str) -> str:
@@ -613,6 +627,14 @@ def sync(
                                 "from": str(old_val),
                                 "to": str(new_val),
                             })
+                elif not sync_file.get("in_labkey"):
+                    # Collect create fields per planned key
+                    key_field = sync_file.get("presence_field") or ""
+                    key_value = sync_file.get("presence_value") or ""
+                    group_key = (str(key_field), str(key_value))
+                    rows = create_field_groups.setdefault(group_key, [])
+                    for k in (fields or {}).keys():
+                        rows.append({"field": k, "to": str(planned_row.get(k))})
 
         T.out(
             synced_file_list,
@@ -647,10 +669,26 @@ def sync(
             })
         M.info("Copy summary (executed):")
         T.out(summary_rows, sort_by="source", column_options={"justify": "left", "vertical": "middle"})
-        # Log planned update changes (executed mode)
+        # Log planned update changes (executed mode), one table per matched row
         if update_diff_rows:
-            M.info("Planned update changes (executed run):")
-            T.out(update_diff_rows, column_options={"justify": "left", "vertical": "middle"})
+            # Group by (row_key_field, row_key_value)
+            groups: dict[tuple[str, str], list] = {}
+            for d in update_diff_rows:
+                key = (str(d.get("row_key_field", "")), str(d.get("row_key_value", "")))
+                groups.setdefault(key, []).append({
+                    "field": d.get("field", ""),
+                    "from": d.get("from", ""),
+                    "to": d.get("to", ""),
+                })
+            for (kf, kv), rows in groups.items():
+                M.info(f"Planned update changes (executed run) for {kf} == '{kv}':")
+                T.out(rows, column_options={"justify": "left", "vertical": "middle"})
+
+        # Log planned create fields (executed mode), one table per new row
+        if create_field_groups:
+            for (kf, kv), rows in create_field_groups.items():
+                M.info(f"Planned create fields (executed run) for {kf} == '{kv}':")
+                T.out(rows, column_options={"justify": "left", "vertical": "middle"})
         
         if writeback_rows:
             try:
@@ -687,6 +725,7 @@ def sync(
                     return nm or field
             return field
         update_diff_rows = []
+        create_field_groups: dict[tuple[str, str], list] = {}
         for sf in sync_file_list:
             planned_row = _build_row(sf, fields, before_wb_repls)
             writeback_rows.append(planned_row)
@@ -706,14 +745,32 @@ def sync(
                             "from": str(old_val),
                             "to": str(new_val),
                         })
-        try:
-            M.info("Planned LabKey rows (dry run):")
-            print(json.dumps(writeback_rows, indent=2))
-        except Exception:
-            pass
+            else:
+                # Will be created: show planned fields per row key
+                key_field = sf.get("presence_field") or ""
+                key_value = sf.get("presence_value") or ""
+                group_key = (str(key_field), str(key_value))
+                rows = create_field_groups.setdefault(group_key, [])
+                for k in (fields or {}).keys():
+                    rows.append({"field": k, "to": str(planned_row.get(k))})
+        # No JSON dump of planned rows; show per-row create tables and update diffs instead
         if update_diff_rows:
-            M.info("Planned update changes (dry run):")
-            T.out(update_diff_rows, column_options={"justify": "left", "vertical": "middle"})
+            # Group by (row_key_field, row_key_value)
+            groups: dict[tuple[str, str], list] = {}
+            for d in update_diff_rows:
+                key = (str(d.get("row_key_field", "")), str(d.get("row_key_value", "")))
+                groups.setdefault(key, []).append({
+                    "field": d.get("field", ""),
+                    "from": d.get("from", ""),
+                    "to": d.get("to", ""),
+                })
+            for (kf, kv), rows in groups.items():
+                M.info(f"Planned update changes (dry run) for {kf} == '{kv}':")
+                T.out(rows, column_options={"justify": "left", "vertical": "middle"})
+        if create_field_groups:
+            for (kf, kv), rows in create_field_groups.items():
+                M.info(f"Planned create fields (dry run) for {kf} == '{kv}':")
+                T.out(rows, column_options={"justify": "left", "vertical": "middle"})
         return
 
     # --- Helpers to render fields and build LabKey rows ---
