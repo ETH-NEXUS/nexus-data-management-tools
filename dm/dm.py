@@ -7,6 +7,7 @@ import shutil
 import yaml
 import datetime
 import json
+import sys
 from os.path import join, isfile, exists, dirname, basename, getmtime
 from os import makedirs
 from sys import exit
@@ -58,6 +59,38 @@ def sync(
     drop_folder: str,
     do_it: bool,
 ):
+    # Initialize logfile tee: logs/sync/<runmode>/<dataset>-<timestamp>.log
+    try:
+        runmode = "run" if do_it else "dry-run"
+        dataset = basename(drop_folder.rstrip("/")) or "drop"
+        logs_dir = join(dirname(__file__), "logs", "sync", runmode)
+        makedirs(logs_dir, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_path = join(logs_dir, f"{dataset}-{timestamp}.log")
+
+        class _Tee:
+            def __init__(self, *streams):
+                self._streams = tuple(streams)
+            def write(self, data):
+                for s in self._streams:
+                    try:
+                        s.write(data)
+                    except Exception:
+                        pass
+            def flush(self):
+                for s in self._streams:
+                    try:
+                        s.flush()
+                    except Exception:
+                        pass
+
+        _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
+        _log_fp = open(log_path, "w", encoding="utf-8")
+        sys.stdout = _Tee(_orig_stdout, _log_fp)
+        sys.stderr = _Tee(_orig_stderr, _log_fp)
+        M.info(f"Log file: {log_path}")
+    except Exception as ex:
+        M.warn(f"Unable to initialize logfile: {ex}")
     # Load configuration exclusively from drop_folder/sync.yml
     try:
         with open(join(drop_folder, "sync.yml"), "r") as cf:
