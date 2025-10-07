@@ -110,6 +110,8 @@ def sync(
     field_parameters = cfg.get("field_parameters", {})
     labkey = cfg.get("labkey", {})
     lookups = cfg.get("lookups")
+    writeback_cfg = cfg.get("writeback") or {}
+    skip_creates = bool(writeback_cfg.get("skip_creates", False))
 
     if not drop_filename_filter:
         M.error("Please define 'drop_filename_filter'.")
@@ -555,7 +557,10 @@ def sync(
                 r2.pop("presence_field", None)
                 r2.pop("presence_value", None)
                 # Indicate if this will update an existing LabKey row or create a new one
-                r2["write_action"] = "update" if r2.get("in_labkey") else "create"
+                if r2.get("in_labkey"):
+                    r2["write_action"] = "update"
+                else:
+                    r2["write_action"] = "skip_create" if skip_creates else "create"
                 display_rows.append(r2)
             else:
                 display_rows.append(r)
@@ -603,7 +608,8 @@ def sync(
 
     def perform_copy_and_writeback(sync_file_list: list):
         synced_file_list = []
-        writeback_rows = []
+        writeback_rows = []  # rows to insert
+        rows_to_update = []  # rows to update (must contain RowId + internal names)
         update_diff_rows = []
         create_field_groups: dict[tuple[str, str], list] = {}
         # Helper to resolve write-back field name and read existing values
@@ -700,10 +706,19 @@ def sync(
                 _repl_cfg = (cfg.get("replacements") or {})
                 before_wb_repls = _repl_cfg.get("before_writeback") or []
                 planned_row = _build_row(sync_file, fields, before_wb_repls)
-                writeback_rows.append(planned_row)
                 # If presence indicates existing row, log what would change
                 if sync_file.get("meta_found") and sync_file.get("in_labkey") and isinstance(sync_file.get("existing_row"), dict):
                     existing = sync_file.get("existing_row") or {}
+                    row_id = existing.get("RowId") or existing.get("rowid")
+                    if row_id is None:
+                        M.warn("Existing row has no RowId; cannot perform update. Skipping update for this row.")
+                    else:
+                        # Build update payload using internal names
+                        update_row = {"RowId": row_id}
+                        for k in (fields or {}).keys():
+                            rfield = _resolve_wb_field_for_updates(k)
+                            update_row[rfield] = planned_row.get(k)
+                        rows_to_update.append(update_row)
                     key_field = sync_file.get("presence_field") or ""
                     key_value = sync_file.get("presence_value") or ""
                     for k in (fields or {}).keys():
@@ -727,6 +742,9 @@ def sync(
                     rows = create_field_groups.setdefault(group_key, [])
                     for k in (fields or {}).keys():
                         rows.append({"field": k, "to": str(planned_row.get(k))})
+                    # Add to insert list unless skipping creates
+                    if not skip_creates:
+                        writeback_rows.append(planned_row)
 
         T.out(
             synced_file_list,
@@ -796,14 +814,24 @@ def sync(
         # Log planned create fields (executed mode), one table per new row
         if create_field_groups:
             try:
-                T.console.rule("Planned create fields (executed run)")
+                title = "Planned create fields (executed run)"
+                if skip_creates:
+                    title += " [skipped by config]"
+                T.console.rule(title)
             except Exception:
                 pass
             for (kf, kv), rows in create_field_groups.items():
                 M.info(f"Planned create fields (executed run) for {kf} == '{kv}':")
                 T.out(rows, column_options={"justify": "left", "vertical": "middle"})
         
-        if writeback_rows:
+        # Perform updates first, then inserts (if allowed)
+        if rows_to_update:
+            try:
+                api.query.update_rows(labkey["schema"], labkey["table"], rows_to_update)
+                M.info(f"Updated {len(rows_to_update)} row(s) in LabKey {labkey['schema']}.{labkey['table']}")
+            except Exception as ex:
+                M.error(ex)
+        if writeback_rows and not skip_creates:
             try:
                 api.query.insert_rows(labkey["schema"], labkey["table"], writeback_rows)
                 M.info(f"Inserted {len(writeback_rows)} row(s) into LabKey {labkey['schema']}.{labkey['table']}")
