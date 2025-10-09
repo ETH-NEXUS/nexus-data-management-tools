@@ -244,7 +244,7 @@ def sync(
             src_by_name[sname] = src
 
         # Cache column name resolution per (schema, table)
-        qmeta_cache: dict[tuple[str, str], dict] = {}
+        qmeta_cache = {}
         def resolve_field(schema: str, table: str, field: str) -> str:
             key = (schema, table)
             if key not in qmeta_cache:
@@ -264,7 +264,7 @@ def sync(
             return field
 
         # Helper to extract a field value from a row using preferred keys with fallbacks
-        def _get_row_value(row: dict, preferred_keys: list[str]):
+        def _get_row_value(row: dict, preferred_keys: list):
             for key in preferred_keys:
                 if key in row and row.get(key) is not None:
                     return row.get(key)
@@ -573,7 +573,9 @@ def sync(
                 else (
                     "red"
                     if row.get("integrity_method") == "md5" and (row.get("md5_ok") is False)
-                    else None
+                    else (
+                        "yellow" if str(row.get("write_action", "")).lower() == "skip_create" else None
+                    )
                 )
             ),
         )
@@ -588,6 +590,15 @@ def sync(
                 action, reason = "would_skip", "metadata_missing"
             elif sf.get("integrity_method") == "md5" and (sf.get("md5_ok") is False):
                 action, reason = "would_skip", "md5_mismatch"
+            else:
+                # If creates are disabled and row is not present in LabKey, or update impossible (no RowId), skip
+                if (not sf.get("in_labkey") and skip_creates):
+                    action, reason = "would_skip", "writeback_skipped"
+                elif sf.get("in_labkey"):
+                    er = sf.get("existing_row") or {}
+                    row_id = er.get("RowId") or er.get("rowid")
+                    if row_id is None:
+                        action, reason = "would_skip", "writeback_skipped"
             rows.append({
                 "source": sf.get("source", ""),
                 "target": sf.get("target", ""),
@@ -611,7 +622,7 @@ def sync(
         writeback_rows = []  # rows to insert
         rows_to_update = []  # rows to update (must contain RowId + internal names)
         update_diff_rows = []
-        create_field_groups: dict[tuple[str, str], list] = {}
+        create_field_groups = {}
         # Helper to resolve write-back field name and read existing values
         _wb_cols_cache = None
         def _resolve_wb_field_for_updates(field: str) -> str:
@@ -645,6 +656,28 @@ def sync(
                     "copy_ok": False,
                     "verified": False,
                     "reason": "metadata_missing",
+                    "sidecar": "",
+                    "sidecar_copy_ok": False,
+                    "target_exists_before": target_exists_before,
+                })
+                continue
+            # If write-back will be skipped (creates disabled and not present, or update impossible), skip copy too
+            can_update = False
+            can_insert = False
+            if sync_file.get("in_labkey"):
+                er = sync_file.get("existing_row") or {}
+                row_id = er.get("RowId") or er.get("rowid")
+                can_update = row_id is not None
+            else:
+                can_insert = not skip_creates
+            if not (can_update or can_insert):
+                M.warn(f"Skipping {sync_file['source']} due to write-back being skipped (skip_creates or missing RowId).")
+                synced_file_list.append({
+                    "source": sync_file["source"],
+                    "target": sync_file["target"],
+                    "copy_ok": False,
+                    "verified": False,
+                    "reason": "writeback_skipped",
                     "sidecar": "",
                     "sidecar_copy_ok": False,
                     "target_exists_before": target_exists_before,
@@ -793,7 +826,7 @@ def sync(
             except Exception:
                 pass
             # Group by (row_key_field, row_key_value)
-            groups: dict[tuple[str, str], list] = {}
+            groups = {}
             for d in update_diff_rows:
                 key = (str(d.get("row_key_field", "")), str(d.get("row_key_value", "")))
                 groups.setdefault(key, []).append({
@@ -812,12 +845,9 @@ def sync(
                 )
 
         # Log planned create fields (executed mode), one table per new row
-        if create_field_groups:
+        if create_field_groups and not skip_creates:
             try:
-                title = "Planned create fields (executed run)"
-                if skip_creates:
-                    title += " [skipped by config]"
-                T.console.rule(title)
+                T.console.rule("Planned create fields (executed run)")
             except Exception:
                 pass
             for (kf, kv), rows in create_field_groups.items():
@@ -866,7 +896,7 @@ def sync(
                     return nm or field
             return field
         update_diff_rows = []
-        create_field_groups: dict[tuple[str, str], list] = {}
+        create_field_groups = {}
         for sf in sync_file_list:
             planned_row = _build_row(sf, fields, before_wb_repls)
             writeback_rows.append(planned_row)
@@ -898,7 +928,7 @@ def sync(
         # No JSON dump of planned rows; show per-row create tables and update diffs instead
         if update_diff_rows:
             # Group by (row_key_field, row_key_value)
-            groups: dict[tuple[str, str], list] = {}
+            groups = {}
             for d in update_diff_rows:
                 key = (str(d.get("row_key_field", "")), str(d.get("row_key_value", "")))
                 groups.setdefault(key, []).append({
@@ -915,7 +945,8 @@ def sync(
                     column_options={"justify": "left", "vertical": "middle"},
                     row_style=lambda r: ("yellow" if (isinstance(r, dict) and str(r.get("will_change", "")).lower() in ("yes", "true", "1")) else None),
                 )
-        if create_field_groups:
+        # Only show creates in dry-run when creates are allowed
+        if create_field_groups and not skip_creates:
             try:
                 T.console.rule("Planned create fields (dry run)")
             except Exception:
@@ -924,8 +955,6 @@ def sync(
                 M.info(f"Planned create fields (dry run) for {kf} == '{kv}':")
                 T.out(rows, column_options={"justify": "left", "vertical": "middle"})
         return
-
-    # --- Helpers to render fields and build LabKey rows ---
     def _render_value(sync_file: dict, vars_map: dict, val: str) -> object:
         if not isinstance(val, str):
             return val
@@ -983,7 +1012,7 @@ def sync(
         vars_map.setdefault("uploaded_filename", basename(sync_file["source"]))
         vars_map.setdefault("target_path", sync_file["target"])
         # Render row
-        row: dict = {}
+        row = {}
         for k, v in (fields_cfg or {}).items():
             row[k] = _render_value(sync_file, vars_map, v)
         # Auto-fill common fields if present

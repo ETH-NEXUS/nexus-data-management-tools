@@ -135,7 +135,7 @@ presence_check:
 # Write-back behavior
 # - skip_creates: when true, presence check determines updates-only; new rows are NOT inserted
 writeback:
-  skip_creates: false
+  skip_creates: true
 
 # Optional: Character/string replacements
 # - before_match: applied to captured/derived variables prior to metadata matching and templating
