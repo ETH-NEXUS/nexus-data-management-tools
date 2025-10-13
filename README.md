@@ -14,7 +14,6 @@ A small Python CLI for synchronizing data files from a "drop" directory into a c
 - Configuration
 - Usage
   - sync
-  - check
 - How It Works (Detailed Flow)
 - Output and Tables
 - Known Limitations and Gaps
@@ -27,21 +26,28 @@ A small Python CLI for synchronizing data files from a "drop" directory into a c
 
 ## Overview
 
-This tool automates moving files discovered in a "drop" directory into a structured repository path. It uses a filename filter and a strict regular expression with named groups to parse metadata from filenames, computes checksums, checks if the files are already present in LabKey, and optionally copies the files.
+This tool automates synchronizing files discovered in a "drop" directory into a structured repository path. It uses a filename filter and a strict regular expression with named groups to parse metadata from filenames, computes checksums, performs a presence check in LabKey, and copies files when run in execute mode. It can update existing LabKey rows (and optionally insert new ones) based on a configurable mapping.
 
-The tool checks LabKey for existing rows that reference the planned target paths. In the current version, building rows and inserting/updating in LabKey are not implemented yet (see Roadmap). Moving files into a processed area is also planned but not yet implemented.
+After a successful and verified copy to the repository, the original drop files can be moved (archived) into a configured processed folder, preserving the subdirectory structure relative to the drop folder. Both copy and move actions are only executed when `--do-it` is provided; otherwise, the tool prints detailed dry-run plans.
 
 ---
 
 ## Features
 
-- Discovery of input files via glob pattern (e.g., `**/*.fastq.gz`) and a strict regex with named capture groups.
-- Construction of target repository path using placeholders like `<phase>`, `<lib>`, `<seq>`, `<run>`, `<hash>`.
-- Filename de-duplication via configurable sequence number (run) or deterministic short hash.
-- MD5 verification when a `.md5` sidecar is present; if absent, a BLAKE3 digest is computed and a `.blake3` sidecar is written before copying.
-- LabKey presence check for the target path using the `labkey` Python SDK.
-- Tabular console output using `rich`, with colored styling for quick status review.
-- Metadata-aware templating for repository filenames using `<source.Field>` placeholders after metadata matching.
+- **[Discovery and templating]** Glob discovery (`drop_filename_filter`) and strict regex parsing (`drop_filename_regex`) with named capture groups.
+- **[Target rendering]** `repository_filename` supports placeholders: regex groups, `<run>` (auto-increment), `<hash>` (CRC32), and `<source.Field>` from matched metadata.
+- **[Integrity]** If a `.md5` sidecar exists, verify before copying; else compute a BLAKE3 digest and write a `.blake3` sidecar pre-copy. Post-copy verification is a block-by-block compare.
+- **[LabKey presence + write-back]** Presence check via `field_parameters.file_list` (default CONTAINS by target path) or a configured presence field with `equal|contains` semantics. In execute mode, updates existing rows and optionally inserts new ones unless `writeback.skip_creates: true`.
+- **[Skip creates]** When `skip_creates: true`, planned creates are suppressed in logs; copy and move are also skipped for files where write-back is skipped (including existing rows without a `RowId`).
+- **[Dry-run plans]**
+  - Pre-run plan table for each file (including `write_action: update|create|skip_create`).
+  - Copy plan summary: `would_copy` or `would_skip:<reason>`.
+  - Update diffs per matched row; planned create fields (suppressed when `skip_creates: true`).
+  - Archive/move plan summary mirroring copy gating: `would_move` or `would_skip:<reason>`.
+- **[Executed run summaries]**
+  - Copy summary (copied vs skipped with reasons), update diffs, planned creates (suppressed when `skip_creates: true`).
+  - Archive/move summary after verified copies: moves originals under `processed_folder` preserving structure.
+- **[Console + Log]** Styled tables via `rich` and a tee’d log file at `dm/logs/sync/<runmode>/<dataset>-<timestamp>.log`.
 
 
 ---
@@ -49,29 +55,17 @@ The tool checks LabKey for existing rows that reference the planned target paths
 ## Architecture and Key Files
 
 - `dm/dm.py`
-  - `sync`: main command that performs discovery, validation, path rendering, checksum verification, LabKey query, and optional copying.
-  - `check`: simple command to verify LabKey connectivity.
-- `dm/config.py`
-  - `options_from_source()`: `click` decorator that loads configuration from the `<drop_folder>/sync.yml` only (no global merge). Use `dm/sync.yml.TEMPLATE` as a starting point for creating per-drop configs.
-- `dm/functions.py`
-  - `now(date_format)`: returns current local time string in given format.
-  - `drop_file_mtime(filename, date_format)`: returns mtime of a file.
+  - `sync`: main CLI command. Loads `<drop_folder>/sync.yml`, discovers files, renders targets, checks integrity, optional metadata matching, LabKey presence, and outputs dry-run plans. With `--do-it`, performs copy + verify, write-back (update/insert), copies sidecars, and archives originals into `processed_folder`.
 - `dm/helpers.py`
-  - `Message`: colored console messages.
-  - `TableOutput`: pretty table printer using `rich`.
-  - `Hasher`: `crc32`, `md5`, `blake3`, and block-by-block `equals` helpers (streaming, memory efficient).
+  - `Message`, `TableOutput`, `Hasher` utilities.
 - `dm/integrity.py`
-  - Utilities to read `.md5` sidecars, compute/write `.blake3` sidecars, and copy a matching sidecar alongside the synced file.
+  - Read `.md5`, write `.blake3`, and copy matching sidecar files.
 - `dm/metadata.py`
-  - Loaders for external metadata sources (LabKey, Excel, CSV) and support for matching metadata rows per file using configured rules.
+  - General-purpose metadata loaders (LabKey/Excel/CSV). Note: the current pipeline in `dm/dm.py` performs simplified LabKey-based lookups inline.
 - `dm/sync.yml.TEMPLATE`
-  - Template configuration to copy into each drop folder as `<drop_folder>/sync.yml`.
-- `environment.yml`
-  - Conda environment specification (Python 3.10 + pip dependencies).
-- `Makefile`
-  - `envupdate`: update the conda environment from `environment.yml`.
-- `.vscode/settings.json`
-  - Editor settings for formatting with Black.
+  - Reference configuration for per-drop `sync.yml` files.
+- `environment.yml`, `Makefile`, `.vscode/settings.json`
+  - Environment, development helpers, and editor config.
 
 ---
 
@@ -182,27 +176,23 @@ Key settings in `sync.yml`:
 - `drop_filename_regex`: Regex with named groups to parse metadata from file paths. Example groups used: `phase`, `seq`, `prefix`, `lib`, `suffix`.
 - `repository_folder`: Root folder where files are to be synchronized.
 - `repository_filename`: Template for the target filename, e.g., `scRNA/raw/<phase>/<lib>/<lib>_<seq>_r<run>__<suffix>.fastq.gz`. Placeholders are replaced using the named groups and special values. Also supports metadata placeholders of the form `<source.Field>` after metadata matching, e.g., `scRNA/raw/<phase>/<lib>/<phase>_<lk_experiments.Name>_r<run>__<suffix>.fastq.gz`.
-- `processed_folder`: Root where processed (or archived) drop files should be moved. (Not yet implemented)
+- `processed_folder`: Parent folder where original drop files are moved after a verified copy. The relative path under the drop folder is preserved.
 - `filename_sequence`: Either `run` (increments `<run>`) or `hash` (sets `<hash>` to a short CRC32-derived value).
 - `date_format`: Datetime format string intended for use by helper functions like `now()` or `drop_file_mtime()`. Reserved for future LabKey write-back (not used by the core flow yet).
 - `labkey`:
   - `host`: LabKey host
-  - `container`: LabKey container/folder (e.g., `LOOP Intercept`)
-  - `schema`: Target schema (e.g., `exp`) — see Known Limitations for a note
-  - `table`: Target table (e.g., `data` or `scRNA_Experiments`) — see Known Limitations
-  - `context`: Optional; not currently used.
-- `metadata_sources`: A list of external metadata sources to load during `sync`. Each item has a `type` and
-  type-specific fields. Supported types:
-  - `labkey`: Load rows from a LabKey table using the configured host/container/schema/table.
-  - `excel`: Load rows from an Excel file (`.xlsx`) using `openpyxl`.
-  - `csv`: Load rows from a CSV file using Python's csv module.
+  - `container`: LabKey container/folder (e.g., `LOOP mTORUS`)
+  - `schema`: Target schema name only (no dots), e.g., `exp` or your custom schema
+  - `table`: Target table name in that schema, e.g., `16S_Experiments`
+  - `context`: Optional context path; passed through to the API wrapper
+- `metadata_sources`: External metadata sources. The current pipeline in `dm/dm.py` performs inline LabKey lookups using the top-level LabKey connection. Other types (Excel/CSV) exist in `dm/metadata.py` but are not invoked by the default pipeline.
 - `metadata_match`: Rules to find the metadata row for each file before syncing.
   - `key_template`: Default template string to render a metadata key from the filename regex variables (e.g., `<prefix>`, `<lib>_<seq>`).
   - `search`: Ordered list of rule objects, each with:
     - `source`: Name of the source from `metadata_sources` to search.
     - `field`: Field/column name within that source to match against.
     - `key_template` (optional): Override the default template for this rule.
-- `metadata_required`: Boolean flag. If `true`, files without a matching metadata row are skipped (reason `metadata_missing`).
+- `metadata_required`: Boolean flag. If `true`, files without a matching metadata row are skipped (reason `metadata_missing`) for both copy and archive plans.
 
 Example `metadata_sources` configuration:
 
@@ -242,12 +232,13 @@ metadata_match:
 ```
 
 Notes:
-- Excel support requires `openpyxl`. This repository includes it in `environment.yml`.
-- `fields`: Reserved for future LabKey insert/upsert. In the current version, no rows are built or written, so this mapping is not processed yet.
+- `fields`: Mapping used to build LabKey rows during write-back. Supports placeholders and functions (`now()`, `drop_file_mtime()`).
 - `field_parameters`:
-  - `file_list`: the field to search with a `CONTAINS` filter when checking LabKey for existing rows (e.g., `Path_To_Synced_Data`).
+  - `file_list`: identifies the field used for presence CONTAINS-check by target path (e.g., `Path To Synced Data`).
   - `file_list_aggregator`: reserved for future aggregation behavior during write-back.
-- `lookups`: Reserved for future value translation, e.g., mapping `phase: btki -> BTKi`. Not used by the current flow.
+- `replacements`:
+  - `before_match` applies to captured/derived variables before templating and metadata matching.
+  - `before_writeback` can transform variables (target: var) prior to rendering or fields (target: field) after rendering.
 
 Example template `dm/sync.yml.TEMPLATE` (excerpt):
 
@@ -290,34 +281,21 @@ Run commands from the repo root unless otherwise noted.
 
 Synchronize files from a drop folder into the repository.
 
-Typical usage (with configuration taken from `<drop_folder>/sync.yml`):
+Typical usage (configuration is taken from `<drop_folder>/sync.yml`):
 
 ```bash
 python dm/dm.py sync --drop-folder /path/to/drop
-```
-
-Options exist for overriding specific values on the command line, but the intended pattern is to keep most settings in YAML. If you want to perform the copy operation, pass `--do-it` and confirm when prompted:
-
-```bash
+# Execute copy/write-back/move after confirmation
 python dm/dm.py sync --drop-folder /path/to/drop --do-it
 ```
 
 Notes:
-- The tool enforces the regex; if a file doesn’t match `drop_filename_regex`, it exits with an error.
-- `<run>` increments to avoid collisions within a run when `filename_sequence: run`. If `hash` mode is enabled, `<hash>` is set to a CRC32-derived value of the source file.
-- Pre-copy integrity logic:
-  - If `.md5` sidecar is present: MD5 is checked; mismatches prevent copy.
-  - If `.md5` sidecar is absent: a `.blake3` sidecar is created for the source before copying (and later copied alongside the target).
-
-### check
-
-Validate LabKey connectivity and basic query capability:
-
-```bash
-python dm/dm.py check -h your-labkey-host.example.org -c "Your Container" -s exp -t data
-```
-
-The command prints the result of a simple `select_rows`.
+- The regex is enforced for planning; non-matching files are listed as skipped by regex in discovery output.
+- `<run>` increments to avoid collisions within a run when `filename_sequence: run`. If `hash` is enabled, `<hash>` is a deterministic CRC32.
+- Integrity policy:
+  - If `.md5` exists: MD5 must match; otherwise the file is skipped.
+  - If `.md5` is absent: a `.blake3` sidecar is computed and written before copy.
+- With `--do-it`, after a verified copy, sidecars are copied to the repository and originals are moved under `processed_folder` (preserving structure).
 
 ---
 
@@ -325,80 +303,58 @@ The command prints the result of a simple `select_rows`.
 
 Inside `dm/dm.py` (`sync` command):
 
-1. Configuration load: Using `options_from_source("--drop-folder")` from `dm/config.py`, the tool reads `<drop_folder>/sync.yml` only. No global merge is performed.
-2. File discovery: Uses `glob` with `drop_filename_filter` to find candidate files in the drop folder.
+1. Configuration load: The tool reads `<drop_folder>/sync.yml` directly based on the `--drop-folder` argument.
+2. File discovery: Uses `glob` with `drop_filename_filter` to find candidate files in the drop folder; prints matched and regex-skipped lists.
 3. Regex validation and capture: Validates each file path against `drop_filename_regex`; extracts named groups (e.g., `phase`, `seq`, `lib`, `prefix`, `suffix`).
-4. Target filename rendering: Renders `repository_filename` by replacing placeholders. Resolves `<run>` collision or sets `<hash>` depending on `filename_sequence`.
-5. LabKey row building: Not implemented in the current version. The `fields`, `field_parameters`, and `lookups` sections are reserved for future write-back.
-6. Aggregation: Not performed yet. If/when write-back is implemented, `file_list_aggregator` will drive grouping.
-7. Pre-copy integrity:
-   - If a sidecar `.md5` exists: compute the file's MD5 (streamed) and compare to the sidecar value. Files with a mismatch are flagged and will be skipped during copy.
-   - If no sidecar `.md5` exists: the tool will compute a BLAKE3 digest and write a `.blake3` sidecar for the source file before copying.
-8. Optional metadata loading: If `metadata_sources` is configured, each source is loaded (LabKey/Excel/CSV) and a summary table (name, type, count, status) is printed.
-9. Optional per-file metadata matching: If `metadata_match` is configured, the tool renders a key per file using the filename regex variables and searches the configured source/field for a matching row. Each file is annotated with `meta_found`, `meta_source`, and `meta_key`.
-10. LabKey presence check: Queries LabKey (`QueryFilter` with `CONTAINS` on your configured `file_list_field`) to set `in_labkey=True/False` for each planned target file.
-11. Reporting: Prints a table of planned sync actions with color cues.
-12. Copy (if `--do-it`):
-    - If `.md5` sidecar exists and matches: proceed to copy.
-    - If `.md5` sidecar exists and mismatches: skip copy and report an error.
-    - If no `.md5` sidecar exists: compute and write a `.blake3` sidecar for the source file, then copy.
-    - After copy: verify by block-by-block compare. If verification succeeds, copy the matching sidecar (`.md5` or `.blake3`) to the repository alongside the main file. Then print a second table showing copy status.
-    - If `metadata_required: true` and a file has no matching metadata row, it is skipped with `reason: metadata_missing`.
+4. Derivations and replacements: Optionally derive variables from matched metadata per `metadata_derive`, then apply `replacements.before_match` to captured/derived variables.
+5. Target filename rendering: Render `repository_filename` with variables and `<source.Field>` placeholders (from matched metadata). Resolve `<run>` collisions or set `<hash>` per `filename_sequence`.
+6. Integrity check:
+   - If `.md5` exists: compute and compare MD5; mismatches skip copying.
+   - If no `.md5`: compute BLAKE3 and write a `.blake3` sidecar prior to copy.
+7. LabKey presence check: By default uses `field_parameters.file_list` with a CONTAINS filter on target path, or `presence_check.field` with `equal|contains`. Annotates each file with `in_labkey` and `existing_row`.
+8. Pre-run reporting:
+   - Plan table with key annotations including `write_action: update|create|skip_create`.
+   - Dry-run write-back tables: update diffs and (unless `skip_creates`) planned create fields.
+   - Copy plan summary: `would_copy` or `would_skip:<reason>`.
+   - Archive/move plan summary: `would_move` or `would_skip:<reason>` (mirrors copy gating).
+9. Execute mode (`--do-it`):
+   - Enforce gating: metadata required, MD5 pass if present, and write-back viability (skip if `skip_creates` blocks or missing `RowId` for updates).
+   - Copy source → target, verify by block-by-block compare, then copy matching sidecar to the repository.
+   - Build write-back rows from `fields`; update existing rows by `RowId` and insert new rows unless `writeback.skip_creates: true`.
+   - Post-run reporting: copy summary, update diffs, and (unless `skip_creates`) planned create fields.
+   - Archive/move originals: after verified copy, move original files under `processed_folder` preserving the drop-relative structure; print archive/move summary.
 
 ---
 
 ## Output and Tables
 
-Two tables are printed using `rich`:
+Primary tables printed via `rich`:
 
-- Pre-copy table (planning and integrity status):
-  - `source`
-  - `target`
-  - `integrity_method`: md5 or blake3
-  - `md5`: computed MD5 (if applicable)
-  - `orig_md5`: value from `.md5` sidecar (if present)
-  - `md5_ok`: result of the MD5 match (if applicable)
-  - `meta_found`: whether a metadata row was found according to `metadata_match`
-  - `meta_source`: which source produced the match
-  - `meta_key`: the rendered key used for matching
-  - `in_labkey`: Whether LabKey already has a row referencing the target path
-
-- Post-copy table (copy and verification status):
-  - `source`
-  - `target`
-  - `copy_ok`: Whether the copy operation created the target file
-  - `verified`: Result of block-by-block comparison between source and target
-  - `sidecar`: Which sidecar was used/copied (`md5`, `blake3`, or empty if none)
-  - `sidecar_copy_ok`: Whether sidecar copy to the target location succeeded
-
-Color highlighting:
-- Pre-copy: Red rows indicate a `.md5` sidecar exists and the computed MD5 does not match (`md5_ok == False`). Missing `.md5` sidecars are handled by BLAKE3 and are not considered failures.
-- Pre-copy: Yellow rows indicate metadata matching did not find a row (`meta_found == False`), if `metadata_match` is configured.
-- Post-copy: Yellow rows indicate `copy_ok == False`; Red rows indicate `verified == False` or a sidecar was expected/copied (`md5`/`blake3`) but `sidecar_copy_ok == False`.
+- **[Plan table]** One row per file with key annotations. `write_action` shows `update|create|skip_create`. Rows with `skip_create` are highlighted yellow; MD5 mismatch is red.
+- **[Dry-run write-back]** Per-row update diffs and (unless `skip_creates`) planned create fields.
+- **[Copy plan summary]** `would_copy` or `would_skip:<reason>`; skipped rows highlighted red.
+- **[Archive/move plan summary]** `would_move` or `would_skip:<reason>`; skipped rows highlighted red.
+- **[Copy summary (executed)]** `copied` or `skipped:<reason>` with red highlighting for skips.
+- **[Archive/move summary (executed)]** `moved` or `skipped:<reason>` with red highlighting for skips.
 
 ---
 
 ## Known Limitations and Gaps
 
-- LabKey insert/update not implemented: No rows are prepared or written yet.
-- Move to processed not implemented: `processed_folder` is defined but not used yet to move files after a successful sync.
-- Aggregation not implemented: `file_list_aggregator` is reserved for future use during write-back.
-- Integrity policy: Missing `.md5` is handled by BLAKE3 sidecars and is not flagged as a failure.
-- LabKey schema/table pairing: Ensure `schema` (e.g., `exp`) and `table` (e.g., `data`, or your custom table) are configured as separate values. The example template shows a consistent pair.
-- Unused `labkey.context`: Present in config but not passed to `APIWrapper`.
-- Type handling: Because no rows are written, type coercion is not applicable yet. When write-back is added, preserve booleans/numbers instead of casting to strings.
-- Import style: Imports are module-safe with a fallback for script execution; running via `python -m dm.dm` should work.
+- **[Metadata sources]** The default pipeline performs inline LabKey lookups only. Excel/CSV helpers exist in `dm/metadata.py` but are not currently invoked.
+- **[Aggregation]** `file_list_aggregator` is reserved for future aggregation behavior.
+- **[Field resolution]** Write-back maps field captions/names best-effort; verify your `fields` keys against LabKey when in doubt.
+- **[Move semantics]** Archive/move skips when destination exists; collision/retention policies can be extended if needed.
+- **[Imports]** Imports are module-safe with fallbacks for script execution; running via `python -m dm.dm` should work.
 
 ---
 
 ## Roadmap / Next Steps
 
-- Implement LabKey `insert_rows`/`upsert_rows` with retries and clear error handling.
-- Decide whether to insert per-file rows or aggregated rows keyed by `file_list_aggregator`.
-- Implement moving successfully processed drop files into `processed_folder`, preserving structure.
-- Implement row building from `fields` with proper type preservation and optional `lookups` translation.
-- Add unit tests for config load, metadata matching, path rendering, and copy/verify flows.
-- Add CI, expand documentation, and provide more examples.
+- Optional: Excel/CSV metadata matching in the default pipeline.
+- Optional: Aggregation using `file_list_aggregator`.
+- Robust retries for LabKey write-back and file operations.
+- Unit tests and CI.
 
 ---
 
@@ -422,8 +378,8 @@ python dm/dm.py sync --drop-folder /path/to/drop
 # Execute copy after confirmation
 python dm/dm.py sync --drop-folder /path/to/drop --do-it
 
-# LabKey connectivity check
-python dm/dm.py check -h your-labkey-host -c "Your Container" -s exp -t data
+# View planned actions (dry run)
+python dm/dm.py sync --drop-folder /path/to/drop
 ```
 
 ---

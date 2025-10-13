@@ -1,10 +1,11 @@
-# we assume this config is placed directly in /cluster/work/mtorus/data-drop
+# This config must live inside your selected drop folder. The tool reads only <drop>/sync.yml.
 drop_filename_regex: '(?P<phase>[^/]+)/.*/(?P<uploaded>\d{6}_\d{3}-(?P<hosp_sec>(?P<hosp_pri>[A-Z0-9]+_[A-Z]{1})_[a-z0-9]+-\d)_S\d+_R(?P<read>\d)_\d+\.fastq\.gz)'
 drop_filename_filter: '**/*.fastq.gz'
- # Note: The regex is applied to the source path after removing the drop folder path
- #       You can use named groups like <uploaded>, <hosp_sec>, etc. The tool also derives
- #       <hosp_sec_dot> = <hosp_sec> with '-' replaced by '.' for matching LabKey rows.
- # The glob is evaluated relative to the selected drop folder to discover candidate files.
+ # Notes about discovery/matching:
+ # - The regex is applied to each source path with the drop folder prefix removed.
+ # - You can reference named capture groups like <uploaded>, <hosp_sec>, etc. in templates below.
+ # - If you need to normalize captured variables (e.g., replace '-' with '.'), use 'replacements.before_match'.
+ # - The glob is evaluated relative to the selected drop folder to discover candidate files.
 repository_folder: /cluster/work/mtorus/data-repository
  # Template for the destination path relative to repository_folder.
  # Supported placeholders:
@@ -13,7 +14,7 @@ repository_folder: /cluster/work/mtorus/data-repository
  #   <hash> (CRC32 of file contents when filename_sequence: hash)
  #   <source.Field> (from matched metadata rows; see metadata_sources and metadata_match)
 repository_filename: seq_16S/<phase>/raw/<patient_id>/<patient_id>_<visit>-<sample_id>-<technology>/<patient_id>_<visit>-<sample_id>-<technology>-R<read>r<run>v1.0__<uploaded>
- # Destination parent for archiving/moving successfully processed drop files.
+ # Destination parent for archiving/moving original drop files after a successful copy+verify.
  # After a successful copy+verify to the repository, the original file is moved
  # under this folder, preserving its path relative to the selected drop folder.
  # Example:
@@ -49,7 +50,10 @@ labkey:
   container: 'LOOP mTORUS'
   context:
   use_ssl: false
-  schema: exp.data
+  # IMPORTANT:
+  # - 'schema' must be the schema name only (no dots), e.g., 'exp' or your custom schema
+  # - 'table' must be the exact table name in that schema, e.g., '16S_Experiments'
+  schema: exp
   table: 16S_Experiments
 
 # Define values for fields in the write-back LabKey table (defined in 'labkey' above).
@@ -119,7 +123,7 @@ metadata_match:
     - source: samples
       field: Hospital Secondary Sample Id
 
-# If true, a metadata match is required to allow copying. Files without a
+# If true, a metadata match is required to allow copying and moving. Files without a
 # matching metadata row will be skipped with reason "metadata_missing".
 metadata_required: true
 
@@ -136,11 +140,18 @@ metadata_derive:
     regex: '^(?P<sample_name_prefix>MTR-[A-Z]-\d{3}_V\d{2}-[A-Z]{2})'
 
 presence_check:
-  field: Uploaded File Name        # or "file_list" to keep default behavior
+  # Controls how existing rows are found in the write-back table.
+  # Default behavior (if omitted): uses the 'file_list' role to search by target path with CONTAINS.
+  # To match by a specific field value, set 'field' to a key present in 'fields' and choose 'match':
+  # - equal    : QueryFilter.EQUAL
+  # - contains : QueryFilter.CONTAINS
+  field: Uploaded File Name
   match: equal       # equal | contains
 
 # Write-back behavior
-# - skip_creates: when true, presence check determines updates-only; new rows are NOT inserted
+# - skip_creates: when true, presence check determines updates-only; new rows are NOT inserted.
+#   Additionally, when a write-back is skipped (either due to skip_creates or missing RowId to update),
+#   the file copy and the final archive/move are skipped as well. Dry-run tables will show 'writeback_skipped'.
 writeback:
   skip_creates: true
 
