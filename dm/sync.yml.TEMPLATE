@@ -1,5 +1,5 @@
 # we assume this config is placed directly in /cluster/work/mtorus/data-drop
-drop_filename_regex: '(?P<phase>[^/]+)/.*/(?P<uploaded>\d{6}_\d{3}-(?P<hosp_sec>(?P<hosp_pri>[A-Z0-9]+_[A-Z]{1})_[a-z0-9]+-\d)_S\d+_R\d_\d+\.fastq\.gz)'
+drop_filename_regex: '(?P<phase>[^/]+)/.*/(?P<uploaded>\d{6}_\d{3}-(?P<hosp_sec>(?P<hosp_pri>[A-Z0-9]+_[A-Z]{1})_[a-z0-9]+-\d)_S\d+_R(?P<read>\d)_\d+\.fastq\.gz)'
 drop_filename_filter: '**/*.fastq.gz'
  # Note: The regex is applied to the source path after removing the drop folder path
  #       You can use named groups like <uploaded>, <hosp_sec>, etc. The tool also derives
@@ -12,8 +12,15 @@ repository_folder: /cluster/work/mtorus/data-repository
  #   <run>  (auto-incremented when filename_sequence: run)
  #   <hash> (CRC32 of file contents when filename_sequence: hash)
  #   <source.Field> (from matched metadata rows; see metadata_sources and metadata_match)
-repository_filename: seq_16S/<phase>/raw/<patient_id>/<patient_id>_<visit>-<sample_id>-<technology>/<patient_id>_<visit>-<sample_id>-<technology>-r<run>v1.0__<uploaded>
- # Destination for archiving/moving successfully processed drop files (reserved for future use).
+repository_filename: seq_16S/<phase>/raw/<patient_id>/<patient_id>_<visit>-<sample_id>-<technology>/<patient_id>_<visit>-<sample_id>-<technology>-R<read>r<run>v1.0__<uploaded>
+ # Destination parent for archiving/moving successfully processed drop files.
+ # After a successful copy+verify to the repository, the original file is moved
+ # under this folder, preserving its path relative to the selected drop folder.
+ # Example:
+ #   <drop>/seq_16S/validation/2025-04-08/file.fastq.gz
+ # becomes
+ #   <processed_folder>/seq_16S/validation/2025-04-08/file.fastq.gz
+ # The move is executed only with --do-it; otherwise a dry-run summary is shown.
 processed_folder: /cluster/work/mtorus/data-processed
 
 # Filename sequencing for collisions / canonical naming:
@@ -55,7 +62,7 @@ labkey:
 fields:
   Name: <samples.Name>-r<run>v1.0__<uploaded>
   Project Phase: Validation
-  Run Number:
+  Reupload Number:
   SOP Version:
   SOP Name:
   Data Synced: True

@@ -617,6 +617,46 @@ def sync(
             ),
         )
 
+    def summarize_archive_plan(sync_file_list: list, metadata_required: bool):
+        """Plan summary for moving original drop files to processed_folder (dry run)."""
+        rows = []
+        for sf in sync_file_list:
+            action = "would_move"
+            reason = ""
+            # Mirror the copy-plan gating, since a move is only allowed if copy would proceed
+            if not sf.get("meta_found", False):
+                action, reason = "would_skip", "metadata_missing"
+            elif sf.get("integrity_method") == "md5" and (sf.get("md5_ok") is False):
+                action, reason = "would_skip", "md5_mismatch"
+            else:
+                # Write-back gating (skip creates or missing RowId for updates)
+                if (not sf.get("in_labkey") and skip_creates):
+                    action, reason = "would_skip", "writeback_skipped"
+                elif sf.get("in_labkey"):
+                    er = sf.get("existing_row") or {}
+                    row_id = er.get("RowId") or er.get("rowid")
+                    if row_id is None:
+                        action, reason = "would_skip", "writeback_skipped"
+            # Compute destination path preserving drop-folder structure
+            rel_src = re.sub(r"^/", "", str(sf.get("source", "")).replace(drop_folder, ""))
+            dest = join(processed_folder, rel_src)
+            rows.append({
+                "source": sf.get("source", ""),
+                "dest": dest,
+                "action": action if not reason else f"{action}:{reason}",
+            })
+        M.info("Archive/move plan summary (dry run):")
+        T.out(
+            rows,
+            sort_by="source",
+            column_options={"justify": "left", "vertical": "middle"},
+            row_style=lambda r: (
+                "red"
+                if (isinstance(r, dict) and str(r.get("action", "")).startswith("would_skip"))
+                else None
+            ),
+        )
+
     def perform_copy_and_writeback(sync_file_list: list):
         synced_file_list = []
         writeback_rows = []  # rows to insert
@@ -867,6 +907,53 @@ def sync(
                 M.info(f"Inserted {len(writeback_rows)} row(s) into LabKey {labkey['schema']}.{labkey['table']}")
             except Exception as ex:
                 M.error(ex)
+        # Archive/move original files into processed_folder after successful copy verification
+        move_results = []
+        for r in synced_file_list:
+            try:
+                if not r.get("verified"):
+                    move_results.append({
+                        "source": r.get("source", ""),
+                        "dest": "",
+                        "action": f"skipped:not_verified",
+                    })
+                    continue
+                # Preserve drop-folder structure
+                rel_src = re.sub(r"^/", "", str(r.get("source", "")).replace(drop_folder, ""))
+                dest = join(processed_folder, rel_src)
+                # Ensure destination directory exists
+                makedirs(dirname(dest), exist_ok=True)
+                # Skip if destination already exists to avoid overwriting
+                if exists(dest):
+                    move_results.append({
+                        "source": r.get("source", ""),
+                        "dest": dest,
+                        "action": "skipped:exists",
+                    })
+                    continue
+                # Perform move
+                shutil.move(str(r.get("source", "")), dest)
+                move_results.append({
+                    "source": r.get("source", ""),
+                    "dest": dest,
+                    "action": "moved",
+                })
+            except Exception as ex:
+                move_results.append({
+                    "source": r.get("source", ""),
+                    "dest": dest if 'dest' in locals() else "",
+                    "action": f"skipped:error:{ex}",
+                })
+        if move_results:
+            M.info("Archive/move summary (executed):")
+            T.out(
+                move_results,
+                sort_by="source",
+                column_options={"justify": "left", "vertical": "middle"},
+                row_style=lambda r: (
+                    "red" if (isinstance(r, dict) and str(r.get("action", "")).startswith("skipped")) else None
+                ),
+            )
         return
 
     def dry_run_writeback(sync_file_list: list):
@@ -1065,5 +1152,6 @@ def sync(
     else:
         dry_run_writeback(sync_file_list)
         summarize_copy_plan(sync_file_list, bool(cfg.get("metadata_required", False)))
+        summarize_archive_plan(sync_file_list, bool(cfg.get("metadata_required", False)))
 if __name__ == "__main__":
     cli()
