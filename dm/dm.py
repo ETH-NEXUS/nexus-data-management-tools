@@ -1137,11 +1137,11 @@ def sync(
         if any(k in fields_cfg for k in ("Uploaded_File_Name", "Uploaded File Name")):
             key = "Uploaded_File_Name" if "Uploaded_File_Name" in fields_cfg else "Uploaded File Name"
             row[key] = basename(sync_file["source"])
-        if "Md5sum" in fields_cfg:
+        if "Checksum" in fields_cfg:
             try:
                 # Only compute if target exists (dry-run may not copy)
                 if isfile(sync_file["target"]):
-                    row["Md5sum"] = Hasher.md5(sync_file["target"])
+                    row["Checksum"] = Hasher.md5(sync_file["target"])
             except Exception:
                 pass
         # Apply field-target replacements after rendering

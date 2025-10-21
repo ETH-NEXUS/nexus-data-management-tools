@@ -86,7 +86,7 @@ fields:
   Primary_Sample_Id: <sample_name_prefix>
   Hospital Primary Sample Id:
   Hospital Secondary Sample Id:
-  Md5sum: ""
+  Checksum: ""
 
 # Define special roles for fields:
 # - file_list            : Used now to check LabKey presence via a CONTAINS filter on this field
