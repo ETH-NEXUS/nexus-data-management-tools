@@ -8,7 +8,7 @@ import yaml
 import datetime
 import json
 import sys
-from os.path import join, isfile, exists, dirname, basename, getmtime
+from os.path import join, isfile, exists, dirname, basename, getmtime, relpath
 from os import makedirs
 from sys import exit
 
@@ -104,6 +104,11 @@ def sync(
     repository_folder = cfg.get("repository_folder")
     repository_filename = cfg.get("repository_filename")
     processed_folder = cfg.get("processed_folder")
+    # Optional: base path to preserve when archiving originals under processed_folder.
+    # Defaults to the selected drop_folder. Set this to a higher-level folder (e.g.,
+    # "/cluster/work/mtorus/data-drop") if you run sync on a subfolder (e.g., seq_16S)
+    # but want to include that subfolder in the archived path.
+    processed_rebase_from = cfg.get("processed_rebase_from") or drop_folder
     filename_sequence = cfg.get("filename_sequence")
     date_format = cfg.get("date_format", "%Y-%m-%d %H:%M:%S")
     fields = cfg.get("fields")
@@ -224,6 +229,19 @@ def sync(
             except Exception:
                 pass
         return planned
+
+    # Helper to compute archive destination path preserving structure relative to
+    # processed_rebase_from (or drop_folder by default)
+    def _archive_dest_for_source(src_path: str) -> str:
+        try:
+            rel_src = relpath(src_path, start=processed_rebase_from)
+        except Exception:
+            rel_src = re.sub(r"^/", "", str(src_path).replace(drop_folder, ""))
+        # If src is outside the base (relpath begins with ..), fall back to drop_folder relative
+        if isinstance(rel_src, str) and rel_src.startswith(".."):
+            rel_src = re.sub(r"^/", "", str(src_path).replace(drop_folder, ""))
+        rel_src = re.sub(r"^/+", "", rel_src)
+        return join(processed_folder, rel_src)
 
     def load_and_match_metadata(sync_file_list: list):
         """Simplified metadata matching: for each file and rule, render key and do a direct
@@ -637,9 +655,8 @@ def sync(
                     row_id = er.get("RowId") or er.get("rowid")
                     if row_id is None:
                         action, reason = "would_skip", "writeback_skipped"
-            # Compute destination path preserving drop-folder structure
-            rel_src = re.sub(r"^/", "", str(sf.get("source", "")).replace(drop_folder, ""))
-            dest = join(processed_folder, rel_src)
+            # Compute destination path preserving structure relative to configured base
+            dest = _archive_dest_for_source(sf.get("source", ""))
             rows.append({
                 "source": sf.get("source", ""),
                 "dest": dest,
@@ -918,9 +935,8 @@ def sync(
                         "action": f"skipped:not_verified",
                     })
                     continue
-                # Preserve drop-folder structure
-                rel_src = re.sub(r"^/", "", str(r.get("source", "")).replace(drop_folder, ""))
-                dest = join(processed_folder, rel_src)
+                # Compute destination path preserving structure relative to configured base
+                dest = _archive_dest_for_source(r.get("source", ""))
                 # Ensure destination directory exists
                 makedirs(dirname(dest), exist_ok=True)
                 # Skip if destination already exists to avoid overwriting
@@ -933,9 +949,20 @@ def sync(
                     continue
                 # Perform move
                 shutil.move(str(r.get("source", "")), dest)
+                # Write companion file with repository target path to enable future checks
+                companion_path = f"{dest}.repository_path.txt"
+                companion_ok = False
+                try:
+                    with open(companion_path, "w", encoding="utf-8") as cf:
+                        cf.write(str(r.get("target", "")) + "\n")
+                    companion_ok = isfile(companion_path)
+                except Exception:
+                    companion_ok = False
                 move_results.append({
                     "source": r.get("source", ""),
                     "dest": dest,
+                    "companion": companion_path,
+                    "companion_ok": companion_ok,
                     "action": "moved",
                 })
             except Exception as ex:

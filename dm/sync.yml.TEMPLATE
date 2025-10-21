@@ -24,6 +24,14 @@ repository_filename: seq_16S/<phase>/raw/<patient_id>/<patient_id>_<visit>-<samp
  # The move is executed only with --do-it; otherwise a dry-run summary is shown.
 processed_folder: /cluster/work/mtorus/data-processed
 
+# Optional: When you run sync on a subfolder of the drop (e.g., /cluster/work/mtorus/data-drop/seq_16S),
+# set this to the top-level drop folder (e.g., /cluster/work/mtorus/data-drop) to ensure that the first
+# subfolder (seq_16S) is preserved under processed_folder. If omitted, it defaults to the selected drop_folder.
+# Example:
+#   source:  /cluster/work/mtorus/data-drop/seq_16S/validation/2025-04-08/file.fastq.gz
+#   dest:    /cluster/work/mtorus/data-processed/seq_16S/validation/2025-04-08/file.fastq.gz
+processed_rebase_from: /cluster/work/mtorus/data-drop
+
 # Filename sequencing for collisions / canonical naming:
 # - run  : Replace <run> with an integer starting at 1 and increment if a
 #          conflicting target filename is already planned in this run.
