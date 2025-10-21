@@ -72,7 +72,7 @@ labkey:
 # Notes:
 # - Non-string values (e.g., booleans) should be written using YAML types (True/False).
 fields:
-  Name: <samples.Name>-r<run>v1.0__<uploaded>
+  Name: <samples.Name>-R<read>r<run>v1.0__<uploaded>
   Project Phase: Validation
   Reupload Number:
   SOP Version:
