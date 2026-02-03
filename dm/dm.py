@@ -49,6 +49,12 @@ def cli():
 @cli.command()
 @click.option("-d", "--drop-folder", required=True, type=click.Path())
 @click.option(
+    "-c", "--config",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to a custom sync YAML config file. Defaults to <drop-folder>/sync.yml.",
+)
+@click.option(
     "--do-it",
     is_flag=True,
     show_default=True,
@@ -57,6 +63,7 @@ def cli():
 )
 def sync(
     drop_folder: str,
+    config: str,
     do_it: bool,
 ):
     # Initialize logfile tee: logs/sync/<runmode>/<dataset>-<timestamp>.log
@@ -91,12 +98,13 @@ def sync(
         M.info(f"Log file: {log_path}")
     except Exception as ex:
         M.warn(f"Unable to initialize logfile: {ex}")
-    # Load configuration exclusively from drop_folder/sync.yml
+    # Load configuration from custom path or drop_folder/sync.yml
+    config_path = config if config else join(drop_folder, "sync.yml")
     try:
-        with open(join(drop_folder, "sync.yml"), "r") as cf:
+        with open(config_path, "r") as cf:
             cfg = yaml.safe_load(cf) or {}
     except Exception as ex:
-        M.error(f"Failed to load configuration from {join(drop_folder, 'sync.yml')}: {ex}")
+        M.error(f"Failed to load configuration from {config_path}: {ex}")
         return
 
     drop_filename_filter = cfg.get("drop_filename_filter")
@@ -165,6 +173,9 @@ def sync(
     def plan_files() -> list:
         M.debug(f"Using drop_filename_filter: {drop_filename_filter}")
         drop_files = glob.glob(join(drop_folder, drop_filename_filter), recursive=True)
+        # Always exclude sync.yml and sidecar files (.blake3, .md5) from being synced
+        drop_files = [f for f in drop_files if not basename(f).lower() in ("sync.yml", "sync.yaml")]
+        drop_files = [f for f in drop_files if not f.endswith((".blake3", ".md5"))]
         planned: list = []
         skipped: list = []
         for source_filename in drop_files:
@@ -187,6 +198,8 @@ def sync(
                             pass
             # Build initial repository filename
             inter = repository_filename
+            # Built-in date placeholder: <today> = current date in YYYY-MM-DD format
+            inter = re.sub(r"<today>", datetime.datetime.now().strftime("%Y-%m-%d"), inter)
             for part, value in caps.items():
                 inter = re.sub(f"<{part}>", str(value), inter)
             # Sequence handling
@@ -437,6 +450,8 @@ def sync(
         meta_placeholder_re = re.compile(r"<([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)>")
         for sf in sync_file_list:
             tmpl = repository_filename
+            # Built-in date placeholder: <today> = current date in YYYY-MM-DD format
+            tmpl = re.sub(r"<today>", datetime.datetime.now().strftime("%Y-%m-%d"), tmpl)
             for part, value in (sf.get("vars") or {}).items():
                 tmpl = re.sub(f"<{part}>", str(value), tmpl)
             def _meta_sub(m):
@@ -604,7 +619,7 @@ def sync(
         for sf in sync_file_list:
             action = "would_copy"
             reason = ""
-            if not sf.get("meta_found", False):
+            if metadata_required and not sf.get("meta_found", False):
                 action, reason = "would_skip", "metadata_missing"
             elif sf.get("integrity_method") == "md5" and (sf.get("md5_ok") is False):
                 action, reason = "would_skip", "md5_mismatch"
@@ -642,7 +657,7 @@ def sync(
             action = "would_move"
             reason = ""
             # Mirror the copy-plan gating, since a move is only allowed if copy would proceed
-            if not sf.get("meta_found", False):
+            if metadata_required and not sf.get("meta_found", False):
                 action, reason = "would_skip", "metadata_missing"
             elif sf.get("integrity_method") == "md5" and (sf.get("md5_ok") is False):
                 action, reason = "would_skip", "md5_mismatch"
@@ -704,8 +719,8 @@ def sync(
             # Copy source to target
             copy_ok = False
             target_exists_before = isfile(sync_file.get("target", ""))
-            # Always require metadata match before copying
-            if not sync_file.get("meta_found", False):
+            # Skip if metadata is required but not found
+            if metadata_required and not sync_file.get("meta_found", False):
                 M.warn(f"Skipping {sync_file['source']} due to missing metadata (metadata_required).")
                 synced_file_list.append({
                     "source": sync_file["source"],
@@ -791,13 +806,15 @@ def sync(
                 "target_exists_before": target_exists_before,
             })
             # Prepare LabKey row for write-back when verified
-            if verified and fields and isinstance(fields, dict):
+            # Write-back proceeds if: metadata not required OR metadata was found
+            should_writeback = not metadata_required or sync_file.get("meta_found", False)
+            if verified and fields and isinstance(fields, dict) and should_writeback:
                 # Load replacements config for write-back
                 _repl_cfg = (cfg.get("replacements") or {})
                 before_wb_repls = _repl_cfg.get("before_writeback") or []
                 planned_row = _build_row(sync_file, fields, before_wb_repls)
                 # If presence indicates existing row, log what would change
-                if sync_file.get("meta_found") and sync_file.get("in_labkey") and isinstance(sync_file.get("existing_row"), dict):
+                if sync_file.get("in_labkey") and isinstance(sync_file.get("existing_row"), dict):
                     existing = sync_file.get("existing_row") or {}
                     row_id = existing.get("RowId") or existing.get("rowid")
                     if row_id is None:
@@ -824,7 +841,7 @@ def sync(
                             "to": str(new_val),
                             "will_change": "yes" if changed else "no",
                         })
-                elif sync_file.get("meta_found") and not sync_file.get("in_labkey"):
+                elif not sync_file.get("in_labkey"):
                     # Collect create fields per planned key
                     key_field = sync_file.get("presence_field") or ""
                     key_value = sync_file.get("presence_value") or ""
@@ -918,12 +935,26 @@ def sync(
                 M.info(f"Updated {len(rows_to_update)} row(s) in LabKey {labkey['schema']}.{labkey['table']}")
             except Exception as ex:
                 M.error(ex)
+        M.debug(f"LabKey insert check: writeback_rows={len(writeback_rows)}, skip_creates={skip_creates}")
         if writeback_rows and not skip_creates:
+            M.debug(f"Attempting to insert {len(writeback_rows)} rows into {labkey['schema']}.{labkey['table']}")
+            # Check for duplicate Name values in the batch
+            names_in_batch = [row.get("Name") for row in writeback_rows]
+            unique_names = set(names_in_batch)
+            if len(names_in_batch) != len(unique_names):
+                M.error(f"DUPLICATE NAMES IN BATCH: {len(names_in_batch)} total, {len(unique_names)} unique")
+                from collections import Counter
+                duplicates = [name for name, count in Counter(names_in_batch).items() if count > 1]
+                M.error(f"Duplicate names: {duplicates}")
             try:
                 api.query.insert_rows(labkey["schema"], labkey["table"], writeback_rows)
                 M.info(f"Inserted {len(writeback_rows)} row(s) into LabKey {labkey['schema']}.{labkey['table']}")
             except Exception as ex:
-                M.error(ex)
+                M.error(f"LabKey insert failed: {ex}")
+        elif not writeback_rows:
+            M.warn("No rows to insert into LabKey (writeback_rows is empty)")
+        elif skip_creates:
+            M.info(f"Skipping {len(writeback_rows)} LabKey inserts (skip_creates=True)")
         # Archive/move original files into processed_folder after successful copy verification
         move_results = []
         for r in synced_file_list:
@@ -948,7 +979,20 @@ def sync(
                     })
                     continue
                 # Perform move
-                shutil.move(str(r.get("source", "")), dest)
+                src = str(r.get("source", ""))
+                shutil.move(src, dest)
+                # Also move any sidecar file (.blake3 or .md5)
+                sidecar_moved = ""
+                for sidecar_ext in [".blake3", ".md5"]:
+                    sidecar_src = f"{src}{sidecar_ext}"
+                    if isfile(sidecar_src):
+                        sidecar_dest = f"{dest}{sidecar_ext}"
+                        try:
+                            shutil.move(sidecar_src, sidecar_dest)
+                            sidecar_moved = sidecar_ext
+                        except Exception as ex:
+                            M.warn(f"Could not move sidecar {sidecar_src}: {ex}")
+                        break
                 # Write companion file with repository target path to enable future checks
                 companion_path = f"{dest}.repository_path.txt"
                 companion_ok = False
@@ -1031,7 +1075,7 @@ def sync(
                         "to": str(new_val),
                         "will_change": "yes" if changed else "no",
                     })
-            elif sf.get("meta_found"):
+            elif not sf.get("in_labkey"):
                 # Will be created: show planned fields per row key
                 key_field = sf.get("presence_field") or ""
                 key_value = sf.get("presence_value") or ""

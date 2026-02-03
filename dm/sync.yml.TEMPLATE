@@ -10,6 +10,7 @@ repository_folder: /cluster/work/mtorus/data-repository
  # Template for the destination path relative to repository_folder.
  # Supported placeholders:
  #   Regex groups, e.g. <uploaded>, and derived groups via metadata_derive (see below)
+ #   <today> (current date in YYYY-MM-DD format)
  #   <run>  (auto-incremented when filename_sequence: run)
  #   <hash> (CRC32 of file contents when filename_sequence: hash)
  #   <source.Field> (from matched metadata rows; see metadata_sources and metadata_match)
