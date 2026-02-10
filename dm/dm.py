@@ -381,6 +381,11 @@ def sync(
                 except Exception as ex:
                     M.warn(f"LabKey lookup failed for {schema}.{table}.{rfield} == '{key_val}': {ex}")
                     continue
+        # Log available row keys from first matched row for debugging
+        for sf in sync_file_list:
+            if sf.get("meta_found") and sf.get("meta_row"):
+                M.info(f"Metadata row keys: {list(sf['meta_row'].keys())}")
+                break
         # Summary
         total = len(sync_file_list)
         matched = sum(1 for sf in sync_file_list if sf.get("meta_found"))

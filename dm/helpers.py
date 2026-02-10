@@ -60,7 +60,7 @@ class TableOutput:
         table = Table(
             show_header=(
                 headers is not None
-                or (isinstance(data, list) and isinstance(data[0], dict))
+                or (isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict))
             ),
             show_lines=show_lines,
             show_edge=False,
@@ -69,7 +69,7 @@ class TableOutput:
         if headers:
             for header in headers:
                 table.add_column(header, **col_opts)
-        elif isinstance(data, list) and isinstance(data[0], dict):
+        elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
             for header in data[0].keys():
                 table.add_column(header, **col_opts)
 
